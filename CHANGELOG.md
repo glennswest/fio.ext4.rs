@@ -30,3 +30,7 @@
   merged-`/usr` symlinks. Verified against Linux: the kernel reports every mode
   and owner correctly, and *uses* the device nodes — `cat /dev/null` and reading
   `/dev/zero` both work.
+- **test:** Ownership is verified 32-bit, not 16. A rootless container maps into
+  subuid ranges past 65535, so truncating to the low half would hand every file
+  to the wrong user. Verified against Linux at 165536 (a typical podman
+  mapping) and at 4294967294.

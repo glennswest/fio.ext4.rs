@@ -488,3 +488,37 @@ async fn symlinks_short_and_long() {
     drop(vol);
     assert_clean(&dev, "after creating symlinks").await;
 }
+
+/// Ownership is 32-bit, not 16. Rootless containers map into subuid ranges
+/// well past 65535 — a filesystem that silently truncates to the low half
+/// hands every file to the wrong user.
+#[tokio::test]
+async fn ownership_is_thirty_two_bit() {
+    use fio_ext4::Attrs;
+
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    // A typical podman mapping: container root lands at host 165536.
+    vol.write_with("/a", b"x", &Attrs::mode(0o644).owner(165_536, 165_536))
+        .await
+        .unwrap();
+    // And the top of the range.
+    vol.write_with("/b", b"x", &Attrs::mode(0o600).owner(4_294_967_294, 4_294_967_294))
+        .await
+        .unwrap();
+    vol.mkdir_with("/d", &Attrs::dir().owner(100_000, 100_001)).await.unwrap();
+    vol.chown("/d", 200_000, 200_001).await.unwrap();
+    vol.flush().await.unwrap();
+
+    let a = vol.stat("/a").await.unwrap();
+    assert_eq!((a.uid, a.gid), (165_536, 165_536));
+    let b = vol.stat("/b").await.unwrap();
+    assert_eq!((b.uid, b.gid), (4_294_967_294, 4_294_967_294));
+    let d = vol.stat("/d").await.unwrap();
+    assert_eq!((d.uid, d.gid), (200_000, 200_001));
+
+    drop(vol);
+    assert_clean(&dev, "after high uids").await;
+}
