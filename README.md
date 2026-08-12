@@ -3,6 +3,16 @@
 Async **userspace file I/O** into an ext2 / ext3 / ext4 filesystem — read and
 write files with no kernel, no mount and no loop device.
 
+## Using it
+
+Not on crates.io; take it by git, pinned to a tag. `fio-ext4` re-exports
+`mkfs_ext4`, so this is the only dependency you need:
+
+```toml
+[dependencies]
+fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.0.0" }
+```
+
 ```rust
 use fio_ext4::Volume;
 use mkfs_ext4::device::FileDevice;
@@ -52,11 +62,26 @@ blocks — then hands the image to a real Linux kernel and checks that
 
 All three of ext2, ext3 and ext4 pass.
 
+## Attributes
+
+Permissions and ownership are first-class, because an image without them is not
+a working root filesystem:
+
+```rust
+vol.write_with("/etc/shadow", data, &Attrs::mode(0o600)).await?;
+vol.write_with("/usr/bin/su", elf, &Attrs::mode(0o4755)).await?;   // setuid
+vol.mkdir_with("/tmp", &Attrs::mode(0o1777)).await?;               // sticky
+vol.chown("/home/gw", 165536, 165536).await?;                      // 32-bit
+vol.mknod("/dev/null", Special::CharDevice { major: 1, minor: 3 },
+          &Attrs::mode(0o666)).await?;
+vol.symlink("/bin", "usr/bin").await?;
+```
+
 ## Not yet
 
-Hard links, symlinks, rename, extended attributes, and files large enough to
-need triple indirection. `dir_index` is read but not maintained, so large
-directories are appended linearly.
+Hard links, rename, extended attributes (and the POSIX ACLs that ride on them),
+and writing files large enough to need triple indirection. `dir_index` is read
+but not maintained, so large directories are appended linearly.
 
 ## Licence
 
