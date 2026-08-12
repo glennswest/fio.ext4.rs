@@ -10,7 +10,7 @@ Not on crates.io; take it by git, pinned to a tag. `fio-ext4` re-exports
 
 ```toml
 [dependencies]
-fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.0.0" }
+fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.0.2" }
 ```
 
 ```rust
@@ -85,4 +85,6 @@ but not maintained, so large directories are appended linearly.
 
 ## Licence
 
-GPL-2.0-or-later, matching `mkfs-ext4` and e2fsprogs.
+`MIT OR Apache-2.0`, at your option — matching `mkfs-ext4` and the rest of the
+Rust ecosystem. The MIT arm is GPLv2-compatible, so this imposes nothing on a
+kernel or RHEL consumer.

@@ -4,8 +4,8 @@ Async userspace file I/O into an ext2/ext3/ext4 filesystem. No kernel, no
 mount, no loop device.
 
 - **Crate:** `fio-ext4` (lib `fio_ext4`)
-- **Version:** 1.0.0 — `Cargo.toml` is the single version location
-- **Licence:** GPL-2.0-or-later
+- **Version:** 1.0.2 — `Cargo.toml` is the single version location
+- **Licence:** MIT OR Apache-2.0
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
   seam, the read layer and `fsck`. The two are developed together; `fio-ext4`
   depends on it by path.

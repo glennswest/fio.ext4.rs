@@ -1,11 +1,11 @@
 [package]
 name = "fio-ext4"
-version = "1.0.0"
+version = "1.0.2"
 edition = "2021"
 authors = ["Glenn West"]
 description = "Async userspace file I/O into an ext2/ext3/ext4 filesystem — read and write files with no kernel, no mount and no loop device"
 repository = "https://github.com/glennswest/fio.ext4.rs"
-license = "GPL-2.0-or-later"
+license = "MIT OR Apache-2.0"
 rust-version = "1.75"
 keywords = ["ext4", "filesystem", "async", "userspace"]
 categories = ["filesystem", "asynchronous"]
@@ -23,7 +23,7 @@ path = "src/lib.rs"
 #
 # Pinned to a tag rather than a branch, so a consumer's build is reproducible:
 # floating on main means two builds a day apart can resolve differently.
-mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v1.0.0", default-features = false }
+mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v1.0.2", default-features = false }
 
 tokio = { version = "1", features = ["fs", "io-util", "rt", "sync", "macros"] }
 async-trait = "0.1"

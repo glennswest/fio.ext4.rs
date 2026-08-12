@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [v1.0.2] — 2026-08-12
+
+### Changed
+
+- **Licence is now `MIT OR Apache-2.0`**, matching `mkfs-ext4` and the Rust
+  ecosystem. The MIT arm is GPLv2-compatible, so nothing here constrains a
+  kernel or RHEL consumer.
+- Pinned to `mkfs-ext4` v1.0.2, which detects a device's logical sector size
+  rather than assuming 512 — a volume exporting 4 KiB sectors now gets a
+  4 KiB-block filesystem.
+
 ## [v1.0.0] — 2026-08-12
 
 First stable release, alongside `mkfs-ext4` v1.0.0. The public API is settled
