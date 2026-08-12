@@ -1,0 +1,21 @@
+# Secrets and environment
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# IDE and OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Build artifacts
+target/
+
+# Logs, temp and test images
+*.log
+tmp/
+*.img
+*.img.*

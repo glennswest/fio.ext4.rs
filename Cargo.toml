@@ -1,0 +1,44 @@
+[package]
+name = "fio-ext4"
+version = "0.1.0"
+edition = "2021"
+authors = ["Glenn West"]
+description = "Async userspace file I/O into an ext2/ext3/ext4 filesystem — read and write files with no kernel, no mount and no loop device"
+repository = "https://github.com/glennswest/fio.ext4.rs"
+license = "GPL-2.0-or-later"
+rust-version = "1.75"
+keywords = ["ext4", "filesystem", "async", "userspace"]
+categories = ["filesystem", "asynchronous"]
+
+[lib]
+name = "fio_ext4"
+path = "src/lib.rs"
+
+[dependencies]
+# The on-disk format, the device seam and the read layer all come from here.
+# A sibling checkout; the two crates are developed together.
+mkfs-ext4 = { path = "../mkfs.ext4.rs", default-features = false }
+
+tokio = { version = "1", features = ["fs", "io-util", "rt", "sync", "macros"] }
+async-trait = "0.1"
+thiserror = "2"
+tracing = "0.1"
+
+clap = { version = "4", features = ["derive"], optional = true }
+anyhow = { version = "1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+tempfile = "3"
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:anyhow", "tokio/rt-multi-thread"]
+
+[[bin]]
+name = "fio-ext4"
+path = "src/bin/fio_ext4.rs"
+required-features = ["cli"]
+
+[profile.release]
+lto = true
