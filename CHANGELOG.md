@@ -15,3 +15,18 @@
   clean afterwards, plus `tests/verify-on-linux.sh`, which builds a filesystem
   entirely in userspace and has a real Linux kernel mount it, compare file
   contents by SHA-256, write to it, and re-check it. ext2, ext3 and ext4 pass.
+- **feat:** Permissions and ownership are first-class. `Attrs` carries mode, uid
+  and gid; `write_with`, `mkdir_with` and `mkdir_all_with` apply them, and
+  `chmod`, `chown` and `set_times` change them afterwards. Setuid, setgid and
+  the sticky bit are all just permission bits, so `/usr/bin/su` at `4755` and
+  `/tmp` at `1777` work as expected. An image where every file is `0644
+  root:root` is not a working root filesystem.
+- **feat:** Special files — `mknod` creates character and block devices, FIFOs
+  and sockets, with device numbers in the encoding the kernel reads; `symlink`
+  and `read_link` handle symbolic links, storing short targets inside the inode
+  where they cost no blocks at all.
+- **test:** `examples/rootfs.rs` builds a root filesystem — modes, owners,
+  `/dev/null`, `/dev/console`, a block device, a FIFO, large device numbers and
+  merged-`/usr` symlinks. Verified against Linux: the kernel reports every mode
+  and owner correctly, and *uses* the device nodes — `cat /dev/null` and reading
+  `/dev/zero` both work.

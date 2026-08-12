@@ -317,3 +317,174 @@ async fn everything_survives_a_reopen() {
     assert_eq!(vol.read("/a/b/c.txt").await.unwrap(), b"persisted");
     assert_clean(&dev, "after reopen").await;
 }
+
+/// Permissions and ownership are not decoration: a root filesystem where
+/// everything is `0644 root:root` boots into a broken system.
+#[tokio::test]
+async fn permissions_and_ownership_are_kept() {
+    use fio_ext4::Attrs;
+
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    vol.mkdir_all("/etc").await.unwrap();
+    vol.write_with("/etc/shadow", b"root:!:20000::::::\n", &Attrs::mode(0o600))
+        .await
+        .unwrap();
+
+    vol.mkdir_all("/usr/bin").await.unwrap();
+    vol.write_with(
+        "/usr/bin/true",
+        b"#!/bin/sh\nexit 0\n",
+        &Attrs::mode(0o755).owner(0, 0),
+    )
+    .await
+    .unwrap();
+
+    // The sticky bit is a permission bit, so /tmp works the usual way.
+    vol.mkdir_with("/tmp", &Attrs::mode(0o1777)).await.unwrap();
+
+    // A user's home, owned by that user.
+    vol.mkdir_with("/home", &Attrs::dir()).await.unwrap();
+    vol.mkdir_with("/home/gw", &Attrs::mode(0o700).owner(1000, 1000))
+        .await
+        .unwrap();
+    vol.write_with(
+        "/home/gw/.profile",
+        b"export PATH=/usr/bin\n",
+        &Attrs::mode(0o644).owner(1000, 1000),
+    )
+    .await
+    .unwrap();
+
+    // And setuid, which is the bit that most obviously matters.
+    vol.write_with("/usr/bin/su", b"\x7fELF", &Attrs::mode(0o4755))
+        .await
+        .unwrap();
+
+    vol.flush().await.unwrap();
+
+    let shadow = vol.stat("/etc/shadow").await.unwrap();
+    assert_eq!(shadow.mode & 0o7777, 0o600);
+    let exe = vol.stat("/usr/bin/true").await.unwrap();
+    assert_eq!(exe.mode & 0o7777, 0o755);
+    let tmp = vol.stat("/tmp").await.unwrap();
+    assert_eq!(tmp.mode & 0o7777, 0o1777);
+    assert!(tmp.is_dir());
+    let home = vol.stat("/home/gw").await.unwrap();
+    assert_eq!((home.uid, home.gid), (1000, 1000));
+    assert_eq!(home.mode & 0o7777, 0o700);
+    let su = vol.stat("/usr/bin/su").await.unwrap();
+    assert_eq!(su.mode & 0o7777, 0o4755, "setuid bit must survive");
+
+    drop(vol);
+    assert_clean(&dev, "after setting modes and owners").await;
+}
+
+#[tokio::test]
+async fn chmod_and_chown_change_what_they_should_and_nothing_else() {
+    use fio_ext4::Attrs;
+
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    vol.write_with("/f", b"contents", &Attrs::mode(0o644)).await.unwrap();
+    vol.chmod("/f", 0o600).await.unwrap();
+    vol.chown("/f", 1000, 100).await.unwrap();
+    vol.flush().await.unwrap();
+
+    let st = vol.stat("/f").await.unwrap();
+    assert_eq!(st.mode & 0o7777, 0o600);
+    assert_eq!((st.uid, st.gid), (1000, 100));
+    // chmod must not turn a file into something else.
+    assert!(st.is_file());
+    assert_eq!(vol.read("/f").await.unwrap(), b"contents");
+
+    drop(vol);
+    assert_clean(&dev, "after chmod and chown").await;
+}
+
+/// A root filesystem needs device nodes. Without `/dev/null` and
+/// `/dev/console` a system does not boot and a container does not run.
+#[tokio::test]
+async fn device_nodes_fifos_and_sockets() {
+    use fio_ext4::{Attrs, Special};
+
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    vol.mkdir("/dev").await.unwrap();
+    vol.mknod("/dev/null", Special::CharDevice { major: 1, minor: 3 }, &Attrs::mode(0o666))
+        .await
+        .unwrap();
+    vol.mknod("/dev/sda", Special::BlockDevice { major: 8, minor: 0 }, &Attrs::mode(0o660).owner(0, 6))
+        .await
+        .unwrap();
+    vol.mknod("/dev/initctl", Special::Fifo, &Attrs::mode(0o600)).await.unwrap();
+    vol.mknod("/dev/log", Special::Socket, &Attrs::mode(0o666)).await.unwrap();
+    // Past 255, so the wider device-number encoding is used.
+    vol.mknod("/dev/big", Special::CharDevice { major: 511, minor: 4095 }, &Attrs::mode(0o600))
+        .await
+        .unwrap();
+    vol.flush().await.unwrap();
+
+    async fn inode_at<D: mkfs_ext4::device::BlockDevice>(
+        vol: &Volume<D>,
+        path: &str,
+    ) -> mkfs_ext4::structs::inode::Inode {
+        let inum = vol.lookup(path).await.unwrap();
+        vol.filesystem().read_inode(inum).await.unwrap()
+    }
+
+    let null = inode_at(&vol, "/dev/null").await;
+    assert_eq!(null.file_type(), 0x2000, "character device");
+    assert_eq!(null.device_numbers(), (1, 3));
+    assert_eq!(null.blocks, 0, "a device owns no blocks");
+    assert_eq!(null.size, 0);
+
+    let sda = inode_at(&vol, "/dev/sda").await;
+    assert_eq!(sda.file_type(), 0x6000, "block device");
+    assert_eq!(sda.device_numbers(), (8, 0));
+    assert_eq!((sda.uid, sda.gid), (0, 6));
+
+    assert_eq!(inode_at(&vol, "/dev/initctl").await.file_type(), 0x1000, "fifo");
+    assert_eq!(inode_at(&vol, "/dev/log").await.file_type(), 0xc000, "socket");
+
+    // The wide encoding has to survive a round trip too.
+    assert_eq!(inode_at(&vol, "/dev/big").await.device_numbers(), (511, 4095));
+
+    drop(vol);
+    assert_clean(&dev, "after creating device nodes").await;
+}
+
+#[tokio::test]
+async fn symlinks_short_and_long() {
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    vol.mkdir_all("/usr/bin").await.unwrap();
+    vol.symlink("/bin", "usr/bin").await.unwrap();
+
+    // Longer than the 60 bytes that fit inside an inode, so it takes a block.
+    let long = "/a/very/long/path/".repeat(6);
+    vol.symlink("/far", &long).await.unwrap();
+    vol.flush().await.unwrap();
+
+    assert_eq!(vol.read_link("/bin").await.unwrap(), "usr/bin");
+    assert_eq!(vol.read_link("/far").await.unwrap(), long);
+
+    // A short target costs no blocks at all — that is the point of a fast
+    // symlink.
+    let short = vol.stat("/bin").await.unwrap();
+    assert_eq!(short.blocks, 0);
+    assert_eq!(short.size, 7);
+    let far = vol.stat("/far").await.unwrap();
+    assert!(far.blocks > 0);
+
+    drop(vol);
+    assert_clean(&dev, "after creating symlinks").await;
+}

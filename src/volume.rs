@@ -16,6 +16,108 @@ use crate::dir;
 use crate::error::{Error, Result};
 use crate::map;
 
+
+/// Permissions and ownership for something being created.
+///
+/// A root filesystem is not just a tree of bytes: `/etc/shadow` has to be
+/// `0600`, `/usr/bin/*` has to be executable, `/tmp` has to be `1777` with the
+/// sticky bit, and files have to belong to somebody. Creating everything
+/// `0644 root:root` produces an image that boots into a broken system.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Attrs {
+    /// Permission bits, including setuid, setgid and sticky. The file-type
+    /// bits are supplied by the operation, not by the caller.
+    pub mode: u16,
+    /// Owning user.
+    pub uid: u32,
+    /// Owning group.
+    pub gid: u32,
+}
+
+impl Default for Attrs {
+    fn default() -> Self {
+        Self {
+            mode: 0o644,
+            uid: 0,
+            gid: 0,
+        }
+    }
+}
+
+impl Attrs {
+    /// Permissions, owned by root.
+    pub fn mode(mode: u16) -> Self {
+        Self {
+            mode,
+            ..Default::default()
+        }
+    }
+
+    /// The defaults a directory wants rather than a file.
+    pub fn dir() -> Self {
+        Self {
+            mode: 0o755,
+            ..Default::default()
+        }
+    }
+
+    /// Set the owner.
+    pub fn owner(mut self, uid: u32, gid: u32) -> Self {
+        self.uid = uid;
+        self.gid = gid;
+        self
+    }
+
+    /// Permission bits only, with any file-type bits masked off.
+    fn perms(&self) -> u16 {
+        self.mode & 0o7777
+    }
+}
+
+
+/// What kind of special file to create.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Special {
+    /// A character device, such as `/dev/null` or `/dev/console`.
+    CharDevice {
+        /// Major number.
+        major: u32,
+        /// Minor number.
+        minor: u32,
+    },
+    /// A block device, such as `/dev/sda`.
+    BlockDevice {
+        /// Major number.
+        major: u32,
+        /// Minor number.
+        minor: u32,
+    },
+    /// A named pipe.
+    Fifo,
+    /// A unix socket.
+    Socket,
+}
+
+impl Special {
+    fn mode_bits(&self) -> u16 {
+        match self {
+            Special::CharDevice { .. } => mode::IFCHR,
+            Special::BlockDevice { .. } => mode::IFBLK,
+            Special::Fifo => mode::IFIFO,
+            Special::Socket => mode::IFSOCK,
+        }
+    }
+
+    fn device(&self) -> Option<(u32, u32)> {
+        match *self {
+            Special::CharDevice { major, minor } | Special::BlockDevice { major, minor } => {
+                Some((major, minor))
+            }
+            _ => None,
+        }
+    }
+}
+
 /// What a directory listing tells you about one name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
@@ -170,7 +272,25 @@ impl<D: BlockDevice> Volume<D> {
     // ---- writing ----
 
     /// Create or replace a file, writing `data` into it.
+    ///
+    /// New files are `0644 root:root`. Use [`Volume::write_with`] to say
+    /// otherwise — an image whose every file is `0644` is not a working root
+    /// filesystem.
     pub async fn write(&mut self, path: &str, data: &[u8]) -> Result<u32> {
+        self.write_with(path, data, &Attrs::default()).await
+    }
+
+    /// Create or replace a file with explicit permissions and ownership.
+    ///
+    /// Replacing an existing file leaves its permissions and owner alone, the
+    /// way writing to a file through a filesystem does — `attrs` applies to
+    /// files this call creates.
+    pub async fn write_with(
+        &mut self,
+        path: &str,
+        data: &[u8],
+        attrs: &Attrs,
+    ) -> Result<u32> {
         let (parent_path, name) = split_path(path)?;
         let parent_ino = self.lookup(&parent_path).await?;
 
@@ -192,7 +312,9 @@ impl<D: BlockDevice> Volume<D> {
             }
             None => {
                 let inum = self.alloc.alloc_inode(&mut self.fs, parent_ino, false).await?;
-                let mut inode = self.new_inode(mode::IFREG | 0o644);
+                let mut inode = self.new_inode(mode::IFREG | attrs.perms());
+                inode.uid = attrs.uid;
+                inode.gid = attrs.gid;
                 inode.links_count = 1;
                 self.fs.write_inode(inum, &inode).await?;
                 self.link_into(parent_ino, name.as_bytes(), inum).await?;
@@ -224,8 +346,16 @@ impl<D: BlockDevice> Volume<D> {
         }
     }
 
-    /// Create a directory.
+    /// Create a directory, `0755 root:root`.
     pub async fn mkdir(&mut self, path: &str) -> Result<u32> {
+        self.mkdir_with(path, &Attrs::dir()).await
+    }
+
+    /// Create a directory with explicit permissions and ownership.
+    ///
+    /// The sticky bit is just a permission bit, so `0o1777` gives the `/tmp`
+    /// semantics a booting system expects.
+    pub async fn mkdir_with(&mut self, path: &str, attrs: &Attrs) -> Result<u32> {
         let (parent_path, name) = split_path(path)?;
         let parent_ino = self.lookup(&parent_path).await?;
 
@@ -254,7 +384,9 @@ impl<D: BlockDevice> Volume<D> {
             filetype,
         )?;
 
-        let mut inode = self.new_inode(mode::IFDIR | 0o755);
+        let mut inode = self.new_inode(mode::IFDIR | attrs.perms());
+        inode.uid = attrs.uid;
+        inode.gid = attrs.gid;
         // "." points at itself, and the parent's entry is the second link.
         inode.links_count = 2;
         inode.size = block_size;
@@ -345,16 +477,160 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
-    /// Create every missing directory along a path.
+    /// Create every missing directory along a path, `0755 root:root`.
     pub async fn mkdir_all(&mut self, path: &str) -> Result<()> {
+        self.mkdir_all_with(path, &Attrs::dir()).await
+    }
+
+    /// Create every missing directory along a path, with given attributes.
+    pub async fn mkdir_all_with(&mut self, path: &str, attrs: &Attrs) -> Result<()> {
         let mut so_far = String::new();
         for part in path.split('/').filter(|p| !p.is_empty()) {
             so_far.push('/');
             so_far.push_str(part);
             if !self.exists(&so_far).await? {
-                self.mkdir(&so_far).await?;
+                self.mkdir_with(&so_far, attrs).await?;
             }
         }
+        Ok(())
+    }
+
+
+    /// Create a device node, FIFO or socket.
+    ///
+    /// A root filesystem without `/dev/null` and `/dev/console` does not boot,
+    /// and a container image without them does not run. The device numbers go
+    /// where the kernel looks for them: small ones in the classic 16-bit slot,
+    /// larger ones in the wider encoding.
+    pub async fn mknod(
+        &mut self,
+        path: &str,
+        special: Special,
+        attrs: &Attrs,
+    ) -> Result<u32> {
+        let (parent_path, name) = split_path(path)?;
+        let parent_ino = self.lookup(&parent_path).await?;
+        {
+            let parent = self.fs.read_inode(parent_ino).await?;
+            if self.fs.lookup(&parent, name.as_bytes()).await?.is_some() {
+                return Err(Error::AlreadyExists(path.into()));
+            }
+        }
+
+        let inum = self.alloc.alloc_inode(&mut self.fs, parent_ino, false).await?;
+        let mut inode = self.new_inode(special.mode_bits() | attrs.perms());
+        // i_block holds the device number, not a block map, so the extent flag
+        // an ordinary file would carry must not be set here.
+        inode.flags &= !mkfs_ext4::structs::inode::iflags::EXTENTS;
+        inode.block = [0u8; mkfs_ext4::structs::inode::I_BLOCK_LEN];
+        inode.uid = attrs.uid;
+        inode.gid = attrs.gid;
+        inode.links_count = 1;
+        inode.size = 0;
+        inode.blocks = 0;
+        if let Some((major, minor)) = special.device() {
+            inode.set_device_numbers(major, minor);
+        }
+        self.fs.write_inode(inum, &inode).await?;
+        self.link_into(parent_ino, name.as_bytes(), inum).await?;
+        Ok(inum)
+    }
+
+    /// Create a symbolic link.
+    ///
+    /// A target short enough lives inside the inode itself — a "fast" symlink,
+    /// costing no blocks at all. Longer targets take a block.
+    pub async fn symlink(&mut self, path: &str, target: &str) -> Result<u32> {
+        let (parent_path, name) = split_path(path)?;
+        let parent_ino = self.lookup(&parent_path).await?;
+        {
+            let parent = self.fs.read_inode(parent_ino).await?;
+            if self.fs.lookup(&parent, name.as_bytes()).await?.is_some() {
+                return Err(Error::AlreadyExists(path.into()));
+            }
+        }
+
+        let inum = self.alloc.alloc_inode(&mut self.fs, parent_ino, false).await?;
+        // A symlink's permissions are conventionally 0777; the target's are
+        // what actually apply.
+        let mut inode = self.new_inode(mode::IFLNK | 0o777);
+        inode.links_count = 1;
+        inode.size = target.len() as u64;
+
+        let bytes = target.as_bytes();
+        if bytes.len() < mkfs_ext4::structs::inode::I_BLOCK_LEN {
+            inode.flags &= !mkfs_ext4::structs::inode::iflags::EXTENTS;
+            inode.block = [0u8; mkfs_ext4::structs::inode::I_BLOCK_LEN];
+            inode.block[..bytes.len()].copy_from_slice(bytes);
+            inode.blocks = 0;
+            self.fs.write_inode(inum, &inode).await?;
+        } else {
+            let block = self.alloc.alloc_block(&mut self.fs, 0).await?;
+            let mut buf = vec![0u8; self.fs.block_size() as usize];
+            buf[..bytes.len()].copy_from_slice(bytes);
+            self.fs.write_block(block, &buf).await?;
+            map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &[block])
+                .await?;
+            inode.blocks = self.fs.block_size() as u64 / 512;
+            self.fs.write_inode(inum, &inode).await?;
+        }
+
+        self.link_into(parent_ino, name.as_bytes(), inum).await?;
+        Ok(inum)
+    }
+
+    /// Read a symbolic link's target.
+    pub async fn read_link(&self, path: &str) -> Result<String> {
+        let inum = self.lookup(path).await?;
+        let inode = self.fs.read_inode(inum).await?;
+        if !inode.is_symlink() {
+            return Err(Error::InvalidPath(format!("{path} is not a symlink")));
+        }
+        let bytes = if inode.size < mkfs_ext4::structs::inode::I_BLOCK_LEN as u64 {
+            inode.block[..inode.size as usize].to_vec()
+        } else {
+            let mut whole = self.fs.read_file(&inode).await?;
+            whole.truncate(inode.size as usize);
+            whole
+        };
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Change a path's permission bits, leaving its type alone.
+    ///
+    /// Takes the full 12 bits, so setuid (`0o4000`), setgid (`0o2000`) and the
+    /// sticky bit (`0o1000`) are all settable.
+    pub async fn chmod(&mut self, path: &str, mode: u16) -> Result<()> {
+        let inum = self.lookup(path).await?;
+        let mut inode = self.fs.read_inode(inum).await?;
+        inode.mode = (inode.mode & mode::IFMT) | (mode & 0o7777);
+        inode.ctime = self.now;
+        self.fs.write_inode(inum, &inode).await?;
+        Ok(())
+    }
+
+    /// Change a path's owner and group.
+    pub async fn chown(&mut self, path: &str, uid: u32, gid: u32) -> Result<()> {
+        let inum = self.lookup(path).await?;
+        let mut inode = self.fs.read_inode(inum).await?;
+        inode.uid = uid;
+        inode.gid = gid;
+        inode.ctime = self.now;
+        self.fs.write_inode(inum, &inode).await?;
+        Ok(())
+    }
+
+    /// Set a path's modification and access times.
+    ///
+    /// Image builds want a fixed timestamp so the same inputs produce the same
+    /// bytes.
+    pub async fn set_times(&mut self, path: &str, secs: u32) -> Result<()> {
+        let inum = self.lookup(path).await?;
+        let mut inode = self.fs.read_inode(inum).await?;
+        inode.atime = secs;
+        inode.mtime = secs;
+        inode.ctime = secs;
+        self.fs.write_inode(inum, &inode).await?;
         Ok(())
     }
 

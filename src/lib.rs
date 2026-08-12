@@ -44,6 +44,10 @@
 //! Hard links, symlinks, rename, extended attributes, and files large enough to
 //! need triple indirection. Directory indexing (`dir_index`) is read but not
 //! maintained, so very large directories are appended linearly.
+//!
+//! Permissions and ownership *are* handled — see [`Attrs`], [`Volume::chmod`]
+//! and [`Volume::chown`]. Extended attributes are not, and POSIX ACLs ride on
+//! extended attributes, so those are absent too.
 
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
@@ -56,7 +60,7 @@ pub mod error;
 pub mod volume;
 
 pub use error::{Error, Result};
-pub use volume::{Entry, Stat, Volume};
+pub use volume::{Attrs, Entry, Special, Stat, Volume};
 
 /// The filesystem crate underneath, re-exported so a caller needs one
 /// dependency rather than two.
