@@ -34,3 +34,9 @@
   subuid ranges past 65535, so truncating to the low half would hand every file
   to the wrong user. Verified against Linux at 165536 (a typical podman
   mapping) and at 4294967294.
+- **fix:** Depend on `mkfs-ext4` by git rather than by path (#1). A path
+  dependency inside a git dependency only resolves when the path is inside the
+  same repository, so any consumer taking `fio-ext4` by git failed to resolve
+  before compiling anything. A `[patch]` section keeps local development
+  against the sibling checkout unchanged — patches apply only to the crate
+  being built, so a downstream consumer never sees it.

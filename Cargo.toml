@@ -16,8 +16,11 @@ path = "src/lib.rs"
 
 [dependencies]
 # The on-disk format, the device seam and the read layer all come from here.
-# A sibling checkout; the two crates are developed together.
-mkfs-ext4 = { path = "../mkfs.ext4.rs", default-features = false }
+#
+# Declared by git, not by path: a path dependency inside a git dependency only
+# resolves when the path is inside the same repository, so a path here would
+# make this crate unusable by anything that takes it by git (fio.ext4.rs#1).
+mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", branch = "main", default-features = false }
 
 tokio = { version = "1", features = ["fs", "io-util", "rt", "sync", "macros"] }
 async-trait = "0.1"
@@ -39,6 +42,13 @@ cli = ["dep:clap", "dep:anyhow", "tokio/rt-multi-thread"]
 name = "fio-ext4"
 path = "src/bin/fio_ext4.rs"
 required-features = ["cli"]
+
+# Day-to-day development builds against the sibling checkout, so a change to
+# mkfs-ext4 is picked up without a commit and a push. Patch sections apply only
+# to the crate being built, so a downstream consumer never sees this and
+# resolves the git dependency above.
+[patch."https://github.com/glennswest/mkfs.ext4.rs"]
+mkfs-ext4 = { path = "../mkfs.ext4.rs" }
 
 [profile.release]
 lto = true
