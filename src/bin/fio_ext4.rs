@@ -5,6 +5,7 @@
 
 use clap::{Parser, Subcommand};
 
+use fio_ext4::archive::{self, Compression, PackOptions, UnpackOptions};
 use fio_ext4::Volume;
 use mkfs_ext4::device::FileDevice;
 
@@ -71,6 +72,39 @@ enum Command {
     Stat {
         /// Path inside the image.
         path: String,
+    },
+
+    /// Unpack a tar archive into the image.
+    ///
+    /// Ownership, permissions, symlinks, hard links, device nodes and extended
+    /// attributes are all preserved, without root and without a mount. gzip is
+    /// detected and decompressed automatically.
+    Untar {
+        /// Archive to read. Omitted, or `-`, reads standard input.
+        archive: Option<String>,
+
+        /// Where in the image the archive's root lands.
+        #[arg(short = 'C', long, default_value = "/")]
+        into: String,
+
+        /// Treat the archive as an OCI layer: obey `.wh.` whiteout markers,
+        /// which delete names from what is already there.
+        #[arg(long)]
+        whiteouts: bool,
+    },
+
+    /// Pack the image's contents into a tar archive.
+    Tar {
+        /// Archive to write. Omitted, or `-`, writes standard output.
+        archive: Option<String>,
+
+        /// Which subtree of the image to archive.
+        #[arg(short = 'C', long, default_value = "/")]
+        from: String,
+
+        /// Compress the archive with gzip.
+        #[arg(short = 'z', long)]
+        gzip: bool,
     },
 }
 
@@ -144,6 +178,66 @@ async fn main() -> anyhow::Result<()> {
         Command::Rmdir { path } => {
             vol.rmdir(&path).await?;
             vol.flush().await?;
+        }
+
+        Command::Untar {
+            archive,
+            into,
+            whiteouts,
+        } => {
+            let source = archive::source(archive.as_deref()).await?;
+            let report = archive::unpack_into(
+                &mut vol,
+                source,
+                &UnpackOptions {
+                    into,
+                    compression: Compression::Auto,
+                    whiteouts,
+                },
+            )
+            .await?;
+            vol.flush().await?;
+            // Progress goes to stderr, because the archive may be on stdout.
+            eprintln!(
+                "{} files ({} bytes), {} directories, {} symlinks, {} hard links, \
+                 {} device nodes, {} xattrs, {} removed",
+                report.files,
+                report.bytes,
+                report.directories,
+                report.symlinks,
+                report.hard_links,
+                report.devices,
+                report.xattrs,
+                report.removed
+            );
+        }
+
+        Command::Tar { archive, from, gzip } => {
+            let sink = archive::sink(archive.as_deref()).await?;
+            let report = archive::pack_from(
+                &vol,
+                sink,
+                &PackOptions {
+                    from,
+                    compression: if gzip {
+                        Compression::Gzip
+                    } else {
+                        Compression::None
+                    },
+                },
+            )
+            .await?;
+            eprintln!(
+                "{} files ({} bytes), {} directories, {} symlinks, {} hard links, \
+                 {} device nodes, {} xattrs",
+                report.files,
+                report.bytes,
+                report.directories,
+                report.symlinks,
+                report.hard_links,
+                report.devices,
+                report.xattrs
+            );
         }
 
         Command::Stat { path } => {

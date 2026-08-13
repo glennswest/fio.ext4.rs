@@ -46,6 +46,10 @@ pub enum Error {
     /// The path was malformed.
     #[error("invalid path: {0}")]
     InvalidPath(String),
+
+    /// The stream an archive was being read from or written to failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 /// Result alias.

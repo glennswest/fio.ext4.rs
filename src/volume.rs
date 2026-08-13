@@ -5,16 +5,20 @@
 //! loop device — just positional I/O against whatever implements
 //! [`BlockDevice`].
 
+use std::collections::BTreeMap;
+
 use mkfs_ext4::device::BlockDevice;
 use mkfs_ext4::fs::Filesystem;
 use mkfs_ext4::structs::dirent::{self, DirEntry};
 use mkfs_ext4::structs::inode::{mode, Inode};
+use mkfs_ext4::structs::xattr::{self, Xattr};
 use mkfs_ext4::structs::superblock::ino;
 
 use crate::alloc::Allocator;
 use crate::dir;
 use crate::error::{Error, Result};
 use crate::map;
+use crate::tar::{self, normalise};
 
 
 /// Permissions and ownership for something being created.
@@ -116,6 +120,68 @@ impl Special {
             _ => None,
         }
     }
+}
+
+/// What an unpack did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct UnpackReport {
+    /// Regular files written.
+    pub files: u64,
+    /// Directories created or adjusted.
+    pub directories: u64,
+    /// Symbolic links created.
+    pub symlinks: u64,
+    /// Hard links created.
+    pub hard_links: u64,
+    /// Device nodes and FIFOs created.
+    pub devices: u64,
+    /// Extended attributes set.
+    pub xattrs: u64,
+    /// Bytes of file content written.
+    pub bytes: u64,
+    /// Names removed by whiteout markers.
+    pub removed: u64,
+}
+
+/// Join a directory and a name, without doubling the separator.
+fn join(dir: &str, name: &str) -> String {
+    if dir.ends_with('/') {
+        format!("{dir}{name}")
+    } else {
+        format!("{dir}/{name}")
+    }
+}
+
+/// Turn an archive's name/value pairs into attributes.
+fn to_xattrs(pairs: &[(String, Vec<u8>)]) -> Vec<Xattr> {
+    pairs
+        .iter()
+        .map(|(name, value)| Xattr::new(name.clone(), value.clone()))
+        .collect()
+}
+
+/// How much of a large file is moved between the archive and the filesystem
+/// at once. Big enough that the per-write path lookup does not dominate, small
+/// enough to sit on a modest device's heap.
+const CHUNK: usize = 64 * 1024;
+
+/// What a pack did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PackReport {
+    /// Regular files read out.
+    pub files: u64,
+    /// Directories.
+    pub directories: u64,
+    /// Symbolic links.
+    pub symlinks: u64,
+    /// Hard links — names beyond the first for one inode.
+    pub hard_links: u64,
+    /// Device nodes and FIFOs.
+    pub devices: u64,
+    /// Extended attributes carried across.
+    pub xattrs: u64,
+    /// Bytes of file content read.
+    pub bytes: u64,
 }
 
 /// What a directory listing tells you about one name.
@@ -436,6 +502,7 @@ impl<D: BlockDevice> Volume<D> {
         if inode.links_count == 0 {
             // The last name is gone, so the file's blocks go back.
             self.truncate_inode(inum).await?;
+            self.free_xattr_block(inum).await?;
             inode = self.fs.read_inode(inum).await?;
             inode.links_count = 0;
             inode.dtime = self.now;
@@ -467,6 +534,7 @@ impl<D: BlockDevice> Volume<D> {
 
         self.unlink_from(parent_ino, name.as_bytes()).await?;
         self.truncate_inode(inum).await?;
+        self.free_xattr_block(inum).await?;
 
         let mut inode = self.fs.read_inode(inum).await?;
         inode.links_count = 0;
@@ -670,6 +738,593 @@ impl<D: BlockDevice> Volume<D> {
             }
         }
         Ok(())
+    }
+
+
+    /// Read one extended attribute.
+    pub async fn get_xattr(&self, path: &str, name: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .list_xattrs(path)
+            .await?
+            .into_iter()
+            .find(|a| a.name == name)
+            .map(|a| a.value))
+    }
+
+    /// List every extended attribute on a path.
+    pub async fn list_xattrs(&self, path: &str) -> Result<Vec<Xattr>> {
+        let inum = self.lookup(path).await?;
+        let raw = self.fs.read_inode_raw(inum).await?;
+        let sb = self.fs.superblock();
+        let extra = if sb.inode_size > 128 {
+            mkfs_ext4::bytes::get_u16(&raw, 0x80)
+        } else {
+            0
+        };
+
+        let mut out = xattr::read_inode_xattrs(&raw, sb.inode_size as usize, extra)?;
+
+        // Anything that did not fit inside the inode lives in a block of its
+        // own, which i_file_acl points at.
+        let inode = self.fs.read_inode(inum).await?;
+        if inode.file_acl != 0 {
+            let block = self.fs.read_block(inode.file_acl).await?;
+            out.extend(xattr::read_block_xattrs(&block)?);
+        }
+        Ok(out)
+    }
+
+    /// Set an extended attribute, replacing any existing value.
+    ///
+    /// This is how a SELinux label (`security.selinux`) or a POSIX ACL
+    /// (`system.posix_acl_access`) gets onto a file in an image built without a
+    /// kernel to do it.
+    pub async fn set_xattr(&mut self, path: &str, name: &str, value: &[u8]) -> Result<()> {
+        let mut attrs = self.list_xattrs(path).await?;
+        match attrs.iter_mut().find(|a| a.name == name) {
+            Some(existing) => existing.value = value.to_vec(),
+            None => attrs.push(Xattr::new(name, value.to_vec())),
+        }
+        self.write_xattrs(path, &attrs).await
+    }
+
+    /// Remove an extended attribute.
+    pub async fn remove_xattr(&mut self, path: &str, name: &str) -> Result<()> {
+        let mut attrs = self.list_xattrs(path).await?;
+        attrs.retain(|a| a.name != name);
+        self.write_xattrs(path, &attrs).await
+    }
+
+    /// Replace a path's whole attribute set.
+    ///
+    /// Attributes are kept inside the inode where they fit, and spill into a
+    /// block of their own when they do not — a realistic SELinux label plus one
+    /// other attribute already exceeds the ~92 bytes a 256-byte inode has
+    /// spare, so the block is the normal case rather than the exception.
+    pub async fn write_xattrs(&mut self, path: &str, attrs: &[Xattr]) -> Result<()> {
+        let inum = self.lookup(path).await?;
+        let sb = self.fs.superblock().clone();
+        let inode_size = sb.inode_size as usize;
+
+        let mut raw = self.fs.read_inode_raw(inum).await?;
+        let extra = if sb.inode_size > 128 {
+            mkfs_ext4::bytes::get_u16(&raw, 0x80)
+        } else {
+            0
+        };
+
+        // Try the inode first; fall back to a block for the whole set rather
+        // than splitting it, which keeps reading simple and ordering stable.
+        let inline_ok = xattr::write_inode_xattrs(&mut raw, inode_size, extra, attrs).is_ok();
+        if !inline_ok {
+            xattr::write_inode_xattrs(&mut raw, inode_size, extra, &[])?;
+        }
+
+        let mut inode = self.fs.read_inode(inum).await?;
+        let old_block = inode.file_acl;
+
+        if inline_ok {
+            if old_block != 0 {
+                self.alloc.free_block(&mut self.fs, old_block).await?;
+                inode.file_acl = 0;
+                inode.blocks = inode.blocks.saturating_sub(sb.block_size() as u64 / 512);
+            }
+        } else {
+            let block = if old_block != 0 {
+                old_block
+            } else {
+                let b = self.alloc.alloc_block(&mut self.fs, 0).await?;
+                inode.file_acl = b;
+                inode.blocks += sb.block_size() as u64 / 512;
+                b
+            };
+            let mut buf = xattr::write_block_xattrs(sb.block_size() as usize, attrs)?;
+            if self.fs.has_metadata_csum() {
+                xattr::stamp_block_csum(&mut buf, self.fs.csum_seed(), block);
+            }
+            self.fs.write_block(block, &buf).await?;
+        }
+
+        // The inode's checksum covers its attribute area, so the modified bytes
+        // have to travel with it rather than being recomputed from the fields.
+        inode.ctime = self.now;
+        inode.tail = raw[128 + extra as usize..inode_size].to_vec();
+        while inode.tail.last() == Some(&0) {
+            inode.tail.pop();
+        }
+        self.fs.write_inode(inum, &inode).await?;
+        Ok(())
+    }
+
+
+    // ---- archives ----
+
+    /// Unpack a tar archive held in memory.
+    ///
+    /// A convenience over [`Volume::unpack_tar_from`]; prefer that one for
+    /// anything large, since this holds the whole archive at once.
+    pub async fn unpack_tar(&mut self, archive: &[u8]) -> Result<UnpackReport> {
+        self.unpack_tar_from(tar::Bytes::new(archive)).await
+    }
+
+    /// Unpack a tar archive from a stream.
+    ///
+    /// This is the image-build operation: a container layer or rootfs tarball
+    /// laid down with its ownership, permissions, symlinks, hard links, device
+    /// nodes and extended attributes intact — with no kernel, no mount and no
+    /// root.
+    ///
+    /// The archive is never held in memory. The source can be a file, a pipe,
+    /// a socket or a registry response; see [`tar::Source`].
+    ///
+    /// Parent directories are created as needed, and entries that appear later
+    /// win — which is how stacked layers are meant to resolve.
+    pub async fn unpack_tar_from<S: tar::Source>(&mut self, src: S) -> Result<UnpackReport> {
+        self.unpack_tar_into(src, "/").await
+    }
+
+    /// Unpack a tar archive from a stream, rooted at `dest` rather than `/`.
+    ///
+    /// `dest` is created if it does not exist.
+    pub async fn unpack_tar_into<S: tar::Source>(
+        &mut self,
+        src: S,
+        dest: &str,
+    ) -> Result<UnpackReport> {
+        self.unpack_stream(src, dest, false).await
+    }
+
+    /// Unpack an OCI container layer, honouring whiteout markers.
+    ///
+    /// A layer does not only add; it deletes. `.wh.<name>` removes `<name>`
+    /// from the layers underneath, and `.wh..wh..opq` hides everything already
+    /// in its directory. Neither marker is itself created. Unpack layers in
+    /// order and the result is the image's filesystem.
+    ///
+    /// The markers are obeyed as they arrive, which is the point in the stream
+    /// where every layer format places them: after the directory's own entry
+    /// and before its new contents.
+    pub async fn unpack_tar_layer<S: tar::Source>(
+        &mut self,
+        src: S,
+        dest: &str,
+    ) -> Result<UnpackReport> {
+        self.unpack_stream(src, dest, true).await
+    }
+
+    /// The unpack loop, with or without layer semantics.
+    async fn unpack_stream<S: tar::Source>(
+        &mut self,
+        src: S,
+        dest: &str,
+        whiteouts: bool,
+    ) -> Result<UnpackReport> {
+        let base = normalise(dest);
+        if !base.is_empty() {
+            self.mkdir_all(&format!("/{base}")).await?;
+        }
+        let at = |path: &str| {
+            if base.is_empty() {
+                format!("/{path}")
+            } else {
+                format!("/{base}/{path}")
+            }
+        };
+
+        let mut reader = tar::Reader::new(src);
+        let mut report = UnpackReport::default();
+
+        // A directory's mode and timestamp are applied at the end, because
+        // writing its children changes both. GNU tar defers them for the same
+        // reason. Its extended attributes ride along, since a directory that
+        // already existed in a lower layer must end up with this layer's
+        // labels and not the ones underneath.
+        let mut deferred: Vec<(String, Attrs, u32, Vec<(String, Vec<u8>)>)> = Vec::new();
+
+        while let Some(header) = reader.next().await? {
+            if header.path.is_empty() {
+                continue;
+            }
+            let (parent, name) = match header.path.rfind('/') {
+                Some(i) => (&header.path[..i], &header.path[i + 1..]),
+                None => ("", header.path.as_str()),
+            };
+
+            if whiteouts && name.starts_with(".wh.") {
+                report.removed += self.apply_whiteout(&at(parent), name).await?;
+                continue;
+            }
+
+            let path = at(&header.path);
+            let attrs = Attrs {
+                mode: header.mode,
+                uid: header.uid,
+                gid: header.gid,
+            };
+
+            // Whatever is being unpacked needs somewhere to go.
+            if !parent.is_empty() {
+                self.mkdir_all(&at(parent)).await?;
+            }
+
+            match header.kind {
+                tar::EntryKind::Directory => {
+                    // A name that was a file in a lower layer and is a
+                    // directory in this one has to change kind, not merge.
+                    if self.exists(&path).await? && !self.stat(&path).await?.is_dir() {
+                        self.remove_all(&path).await?;
+                    }
+                    if !self.exists(&path).await? {
+                        self.mkdir_with(&path, &attrs).await?;
+                    }
+                    deferred.push((path.clone(), attrs, header.mtime, header.xattrs.clone()));
+                    report.directories += 1;
+                }
+                tar::EntryKind::File => {
+                    // Always a fresh inode. Writing over the old one would
+                    // inherit its mode, its ownership and its extended
+                    // attributes — so a layer that replaces a file would keep
+                    // the label of the file it replaced.
+                    self.replace(&path).await?;
+                    self.unpack_file(&path, &attrs, &mut reader).await?;
+                    report.files += 1;
+                    report.bytes += header.size;
+                }
+                tar::EntryKind::Symlink => {
+                    self.replace(&path).await?;
+                    self.symlink(&path, &header.link).await?;
+                    report.symlinks += 1;
+                }
+                tar::EntryKind::HardLink => {
+                    // A link target is a path within the archive, written the
+                    // same way the entry names are.
+                    let target = at(&normalise(&header.link));
+                    self.replace(&path).await?;
+                    self.link(&target, &path).await?;
+                    report.hard_links += 1;
+                }
+                tar::EntryKind::CharDevice
+                | tar::EntryKind::BlockDevice
+                | tar::EntryKind::Fifo => {
+                    let special = match header.kind {
+                        tar::EntryKind::CharDevice => Special::CharDevice {
+                            major: header.major,
+                            minor: header.minor,
+                        },
+                        tar::EntryKind::BlockDevice => Special::BlockDevice {
+                            major: header.major,
+                            minor: header.minor,
+                        },
+                        _ => Special::Fifo,
+                    };
+                    self.replace(&path).await?;
+                    self.mknod(&path, special, &attrs).await?;
+                    report.devices += 1;
+                }
+            }
+
+            // A symlink's own attributes are neither settable nor meaningful.
+            // A hard link shares the target's inode, so setting them again
+            // would only overwrite what the target already said. A directory
+            // waits for the deferred pass.
+            if !matches!(
+                header.kind,
+                tar::EntryKind::Symlink | tar::EntryKind::HardLink | tar::EntryKind::Directory
+            ) {
+                if !header.xattrs.is_empty() {
+                    report.xattrs += header.xattrs.len() as u64;
+                    self.write_xattrs(&path, &to_xattrs(&header.xattrs)).await?;
+                }
+                if header.mtime != 0 {
+                    self.set_times(&path, header.mtime).await?;
+                }
+            }
+        }
+
+        // Deepest first, so a parent's timestamp is not disturbed after it has
+        // been set by work done inside it.
+        deferred.sort_by_key(|(path, _, _, _)| std::cmp::Reverse(path.matches('/').count()));
+        for (path, attrs, mtime, xattrs) in deferred {
+            self.chmod(&path, attrs.mode).await?;
+            self.chown(&path, attrs.uid, attrs.gid).await?;
+            // Unconditionally, including when empty: this is what clears the
+            // labels a lower layer put on the same directory.
+            report.xattrs += xattrs.len() as u64;
+            self.write_xattrs(&path, &to_xattrs(&xattrs)).await?;
+            if mtime != 0 {
+                self.set_times(&path, mtime).await?;
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// Act on a whiteout marker, returning how many names it removed.
+    ///
+    /// `.wh..wh..opq` empties its directory of everything the lower layers put
+    /// there. `.wh.<name>` removes that one name. Anything else beginning
+    /// `.wh..wh.` is an aufs bookkeeping file and is dropped rather than
+    /// written, which is what every other implementation does with them.
+    async fn apply_whiteout(&mut self, dir: &str, name: &str) -> Result<u64> {
+        if name == ".wh..wh..opq" {
+            if !self.exists(dir).await? {
+                return Ok(0);
+            }
+            let mut removed = 0;
+            for entry in self.read_dir(dir).await? {
+                let child = join(dir, &entry.name);
+                self.remove_all(&child).await?;
+                removed += 1;
+            }
+            return Ok(removed);
+        }
+        if name.starts_with(".wh..wh.") {
+            return Ok(0);
+        }
+
+        let victim = join(dir, &name[".wh.".len()..]);
+        if self.exists(&victim).await? {
+            self.remove_all(&victim).await?;
+            return Ok(1);
+        }
+        Ok(0)
+    }
+
+    /// Remove a name, and everything under it if it is a directory.
+    pub async fn remove_all(&mut self, path: &str) -> Result<()> {
+        if !self.stat(path).await?.is_dir() {
+            return self.unlink(path).await;
+        }
+
+        // Gathered first, deepest last, then removed in reverse — an async
+        // function that recurses needs boxing, and a deep tree would recurse
+        // as deep as it goes.
+        let mut order = vec![path.to_string()];
+        let mut at = 0;
+        while at < order.len() {
+            let dir = order[at].clone();
+            at += 1;
+            for entry in self.read_dir(&dir).await? {
+                let child = join(&dir, &entry.name);
+                if entry.is_dir {
+                    order.push(child);
+                } else {
+                    self.unlink(&child).await?;
+                }
+            }
+        }
+        for dir in order.into_iter().rev() {
+            self.rmdir(&dir).await?;
+        }
+        Ok(())
+    }
+
+    /// Write one file's contents out of an archive stream.
+    ///
+    /// Small files go down in a single write. Anything larger is streamed a
+    /// chunk at a time, so unpacking a multi-gigabyte layer costs a buffer,
+    /// not the file.
+    async fn unpack_file<S: tar::Source>(
+        &mut self,
+        path: &str,
+        attrs: &Attrs,
+        reader: &mut tar::Reader<S>,
+    ) -> Result<()> {
+        /// Above this, contents are streamed rather than gathered.
+        const INLINE_LIMIT: usize = 1 << 20;
+
+        let mut buf = vec![0u8; CHUNK];
+        let mut first = Vec::new();
+        while first.len() < INLINE_LIMIT {
+            let n = reader.read(&mut buf).await?;
+            if n == 0 {
+                // The whole file fitted; one write does it.
+                self.write_with(path, &first, attrs).await?;
+                return Ok(());
+            }
+            first.extend_from_slice(&buf[..n]);
+        }
+
+        self.write_with(path, &first, attrs).await?;
+        let mut at = first.len() as u64;
+        drop(first);
+        loop {
+            let n = reader.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            self.write_at(path, at, &buf[..n]).await?;
+            at += n as u64;
+        }
+        Ok(())
+    }
+
+    /// Clear the way for an entry that is replacing an existing name.
+    async fn replace(&mut self, path: &str) -> Result<()> {
+        if self.exists(path).await? {
+            self.remove_all(path).await?;
+        }
+        Ok(())
+    }
+
+    /// Pack a tree into a tar archive held in memory.
+    ///
+    /// A convenience over [`Volume::pack_tar_to`] for small trees.
+    pub async fn pack_tar(&self, root: &str) -> Result<Vec<u8>> {
+        let mut writer = tar::Writer::new(Vec::new());
+        self.pack_into(&mut writer, root).await?;
+        writer.finish().await?;
+        Ok(writer.into_inner())
+    }
+
+    /// Pack a tree into a tar archive, written to a stream.
+    ///
+    /// The inverse of [`Volume::unpack_tar_from`], and the way to get a
+    /// container layer back out of an image without mounting it. Modes,
+    /// ownership, timestamps, symlinks, hard links, device nodes and extended
+    /// attributes all survive the round trip.
+    ///
+    /// Names are emitted in sorted order, so the same tree produces the same
+    /// archive — which is what makes a build reproducible.
+    pub async fn pack_tar_to<K: tar::Sink>(&self, sink: K, root: &str) -> Result<PackReport> {
+        let mut writer = tar::Writer::new(sink);
+        let report = self.pack_into(&mut writer, root).await?;
+        writer.finish().await?;
+        Ok(report)
+    }
+
+    /// Walk a tree, writing each name into an archive.
+    async fn pack_into<K: tar::Sink>(
+        &self,
+        writer: &mut tar::Writer<K>,
+        root: &str,
+    ) -> Result<PackReport> {
+        let root = root.trim_end_matches('/');
+        let mut report = PackReport::default();
+
+        // Inodes already emitted, so the second name for one becomes a hard
+        // link rather than a second copy of the contents.
+        let mut seen: BTreeMap<u32, String> = BTreeMap::new();
+
+        // An explicit stack rather than recursion: an async fn that calls
+        // itself needs boxing, and a deep tree would recurse as deep. Each
+        // level holds its remaining names in reverse, so popping walks the
+        // tree depth-first in sorted order — the order every other tar
+        // produces, and the reason two runs over the same tree agree.
+        let mut stack = vec![(root.to_string(), self.sorted_children(root).await?)];
+
+        loop {
+            let next = match stack.last_mut() {
+                Some((dir, rest)) => rest.pop().map(|entry| (dir.clone(), entry)),
+                None => break,
+            };
+            let (dir, entry) = match next {
+                Some(found) => found,
+                None => {
+                    stack.pop();
+                    continue;
+                }
+            };
+
+            {
+                let path = join(&dir, &entry.name);
+                let stat = self.stat(&path).await?;
+                // Relative to the root being packed, and never absolute — an
+                // archive of absolute paths is a hazard to whoever unpacks it.
+                let name = path[root.len()..].trim_start_matches('/').to_string();
+
+                if let Some(target) = seen.get(&stat.inode) {
+                    writer
+                        .append(
+                            &tar::Header {
+                                path: name,
+                                kind: tar::EntryKind::HardLink,
+                                link: target.clone(),
+                                mode: stat.mode & 0o7777,
+                                uid: stat.uid,
+                                gid: stat.gid,
+                                mtime: stat.mtime,
+                                ..Default::default()
+                            },
+                            &[],
+                        )
+                        .await?;
+                    report.hard_links += 1;
+                    continue;
+                }
+                if stat.links > 1 && !stat.is_dir() {
+                    seen.insert(stat.inode, name.clone());
+                }
+
+                let mut header = tar::Header {
+                    path: name,
+                    kind: tar::EntryKind::File,
+                    mode: stat.mode & 0o7777,
+                    uid: stat.uid,
+                    gid: stat.gid,
+                    mtime: stat.mtime,
+                    ..Default::default()
+                };
+                header.xattrs = self
+                    .list_xattrs(&path)
+                    .await?
+                    .into_iter()
+                    .map(|x| (x.name, x.value))
+                    .collect();
+                report.xattrs += header.xattrs.len() as u64;
+
+                let mut data = Vec::new();
+                match stat.mode & mode::IFMT {
+                    mode::IFDIR => {
+                        header.kind = tar::EntryKind::Directory;
+                        writer.append(&header, &[]).await?;
+                        report.directories += 1;
+                        stack.push((path.clone(), self.sorted_children(&path).await?));
+                        continue;
+                    }
+                    mode::IFLNK => {
+                        header.kind = tar::EntryKind::Symlink;
+                        header.link = self.read_link(&path).await?;
+                        header.xattrs.clear();
+                        report.symlinks += 1;
+                    }
+                    mode::IFCHR | mode::IFBLK | mode::IFIFO | mode::IFSOCK => {
+                        let (major, minor) = self.device_numbers(&path).await?;
+                        header.kind = match stat.mode & mode::IFMT {
+                            mode::IFCHR => tar::EntryKind::CharDevice,
+                            mode::IFBLK => tar::EntryKind::BlockDevice,
+                            _ => tar::EntryKind::Fifo,
+                        };
+                        header.major = major;
+                        header.minor = minor;
+                        report.devices += 1;
+                    }
+                    _ => {
+                        data = self.read(&path).await?;
+                        header.size = data.len() as u64;
+                        report.files += 1;
+                        report.bytes += data.len() as u64;
+                    }
+                }
+
+                writer.append(&header, &data).await?;
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// A directory's names, sorted and reversed, ready to be popped in order.
+    async fn sorted_children(&self, dir: &str) -> Result<Vec<Entry>> {
+        let mut names = self.read_dir(if dir.is_empty() { "/" } else { dir }).await?;
+        names.sort_by(|a, b| b.name.cmp(&a.name));
+        Ok(names)
+    }
+
+    /// The major and minor numbers of a device node; `(0, 0)` for anything else.
+    pub async fn device_numbers(&self, path: &str) -> Result<(u32, u32)> {
+        let inode = self.fs.read_inode(self.lookup(path).await?).await?;
+        Ok(inode.device_numbers())
     }
 
     /// Create a device node, FIFO or socket.
@@ -886,6 +1541,26 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Free every block an inode owns and leave it empty.
+    /// Give back the block holding an inode's extended attributes.
+    ///
+    /// Attributes that did not fit in the inode live in a block of their own,
+    /// and that block is reachable only from `i_file_acl` — so deleting the
+    /// inode without freeing it leaks it, and `e2fsck` reports the block as in
+    /// use but owned by nothing.
+    async fn free_xattr_block(&mut self, inum: u32) -> Result<()> {
+        let mut inode = self.fs.read_inode(inum).await?;
+        if inode.file_acl == 0 {
+            return Ok(());
+        }
+        self.alloc.free_block(&mut self.fs, inode.file_acl).await?;
+        inode.blocks = inode
+            .blocks
+            .saturating_sub(self.fs.superblock().block_size() as u64 / 512);
+        inode.file_acl = 0;
+        self.fs.write_inode(inum, &inode).await?;
+        Ok(())
+    }
+
     async fn truncate_inode(&mut self, inum: u32) -> Result<()> {
         let mut inode = self.fs.read_inode(inum).await?;
 

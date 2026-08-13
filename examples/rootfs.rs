@@ -62,6 +62,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     vol.symlink("/lib", "usr/lib").await?;
     vol.symlink("/etc/localtime", "/usr/share/zoneinfo/Etc/UTC").await?;
 
+    // SELinux labels and an ACL — extended attributes, which is what makes an
+    // image usable on a RHEL host or under a container runtime.
+    vol.set_xattr("/etc/shadow", "security.selinux", b"system_u:object_r:shadow_t:s0\0").await?;
+    vol.set_xattr("/etc/hostname", "security.selinux", b"system_u:object_r:hostname_etc_t:s0\0").await?;
+    vol.set_xattr("/usr/bin/hello", "security.selinux", b"system_u:object_r:bin_t:s0\0").await?;
+    vol.set_xattr("/etc", "security.selinux", b"system_u:object_r:etc_t:s0\0").await?;
+    vol.set_xattr("/etc/hostname", "user.build", b"fio-ext4").await?;
+
     vol.flush().await?;
     println!("built a root filesystem in {path}");
     Ok(())

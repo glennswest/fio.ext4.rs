@@ -645,3 +645,65 @@ async fn triple_indirection_is_built_when_needed() {
     drop(vol);
     assert_clean(&dev, "after a triple-indirect file").await;
 }
+
+/// SELinux labels and POSIX ACLs are extended attributes. An image for a RHEL
+/// host or a container runtime is not usable without them.
+#[tokio::test]
+async fn extended_attributes() {
+    use fio_ext4::Xattr;
+
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    vol.mkdir_all("/etc").await.unwrap();
+    vol.write("/etc/passwd", b"root:x:0:0::/root:/bin/sh\n").await.unwrap();
+
+    vol.set_xattr("/etc/passwd", "security.selinux", b"system_u:object_r:passwd_file_t:s0\0")
+        .await
+        .unwrap();
+    vol.set_xattr("/etc/passwd", "user.origin", b"built-in-userspace")
+        .await
+        .unwrap();
+    vol.flush().await.unwrap();
+
+    assert_eq!(
+        vol.get_xattr("/etc/passwd", "security.selinux").await.unwrap().unwrap(),
+        b"system_u:object_r:passwd_file_t:s0\0"
+    );
+    let names: Vec<String> = vol.list_xattrs("/etc/passwd").await.unwrap()
+        .into_iter().map(|a| a.name).collect();
+    assert!(names.contains(&"security.selinux".to_string()));
+    assert!(names.contains(&"user.origin".to_string()));
+
+    // Replacing a value keeps one entry, not two.
+    vol.set_xattr("/etc/passwd", "user.origin", b"replaced").await.unwrap();
+    vol.flush().await.unwrap();
+    assert_eq!(vol.list_xattrs("/etc/passwd").await.unwrap().len(), 2);
+    assert_eq!(
+        vol.get_xattr("/etc/passwd", "user.origin").await.unwrap().unwrap(),
+        b"replaced"
+    );
+
+    // And removing one leaves the other.
+    vol.remove_xattr("/etc/passwd", "user.origin").await.unwrap();
+    vol.flush().await.unwrap();
+    assert_eq!(vol.list_xattrs("/etc/passwd").await.unwrap().len(), 1);
+    assert!(vol.get_xattr("/etc/passwd", "user.origin").await.unwrap().is_none());
+
+    // Directories carry them too.
+    vol.set_xattr("/etc", "security.selinux", b"system_u:object_r:etc_t:s0\0").await.unwrap();
+    vol.flush().await.unwrap();
+    assert!(vol.get_xattr("/etc", "security.selinux").await.unwrap().is_some());
+
+    // A whole set at once.
+    vol.write_xattrs("/etc/passwd", &[
+        Xattr::new("security.selinux", b"system_u:object_r:etc_t:s0\0".to_vec()),
+        Xattr::new("user.a", b"1".to_vec()),
+    ]).await.unwrap();
+    vol.flush().await.unwrap();
+    assert_eq!(vol.list_xattrs("/etc/passwd").await.unwrap().len(), 2);
+
+    drop(vol);
+    assert_clean(&dev, "after extended attributes").await;
+}

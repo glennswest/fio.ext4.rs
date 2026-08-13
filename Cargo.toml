@@ -23,12 +23,17 @@ path = "src/lib.rs"
 #
 # Pinned to a tag rather than a branch, so a consumer's build is reproducible:
 # floating on main means two builds a day apart can resolve differently.
-mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v1.0.2", default-features = false }
+mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v1.1.0", default-features = false }
 
-tokio = { version = "1", features = ["fs", "io-util", "rt", "sync", "macros"] }
+tokio = { version = "1", features = ["fs", "io-std", "io-util", "rt", "sync", "macros"] }
 async-trait = "0.1"
 thiserror = "2"
 tracing = "0.1"
+
+# Container layers arrive gzipped; without this they can only be piped through
+# an external decompressor first. Optional so a build for a small target can
+# leave the compressor out.
+async-compression = { version = "0.4", features = ["tokio", "gzip"], optional = true }
 
 clap = { version = "4", features = ["derive"], optional = true }
 anyhow = { version = "1", optional = true }
@@ -38,8 +43,9 @@ tokio = { version = "1", features = ["full"] }
 tempfile = "3"
 
 [features]
-default = ["cli"]
+default = ["cli", "gzip"]
 cli = ["dep:clap", "dep:anyhow", "tokio/rt-multi-thread"]
+gzip = ["dep:async-compression"]
 
 [[bin]]
 name = "fio-ext4"
