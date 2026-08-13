@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Hard links** — `link()`, sharing one inode between names. Linking a
+  directory is refused: it would turn the tree into a graph, which every
+  checker treats as corruption.
+- **`rename()`** — within a directory, across directories, and over an existing
+  name. A directory move carries its `..` with it and adjusts both parents'
+  link counts; moving a directory inside itself is refused, since the subtree
+  would be unreachable.
+- **`write_at()`** — write at an offset, leaving the rest of the file alone,
+  extending the file if it runs past the end.
+- **Triple indirection on write.** ext2 and ext3 files past ~4 GiB of double
+  indirection now build the third level rather than being refused.
+
+### Fixed
+
+- A double indirect block was filled without bounding it to `per_block`
+  pointers, so a file large enough to need triple indirection wrote past the
+  end of the buffer.
+- Dropping a `Volume` with unflushed changes now logs a warning. Directory
+  blocks and inodes are written as they change but bitmaps are buffered, so a
+  missed `flush()` leaves names pointing at inodes the bitmap never marked
+  used — corruption rather than merely unsaved work. Found by a test of mine
+  that omitted the flush.
+
 ## [v1.0.2] — 2026-08-12
 
 ### Changed

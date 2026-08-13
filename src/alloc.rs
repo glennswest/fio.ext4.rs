@@ -26,6 +26,13 @@ pub(crate) struct BitmapCache {
     dirty_inode: BTreeMap<u32, bool>,
 }
 
+impl BitmapCache {
+    /// Whether anything is still waiting to be written back.
+    pub(crate) fn is_dirty(&self) -> bool {
+        self.dirty_block.values().any(|d| *d) || self.dirty_inode.values().any(|d| *d)
+    }
+}
+
 /// Allocation over a live filesystem.
 pub(crate) struct Allocator {
     pub(crate) cache: BitmapCache,

@@ -195,8 +195,14 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Write back everything still held in memory.
     ///
-    /// Call before dropping the volume, or the bitmaps, group descriptors and
-    /// superblock counters will not match what was written.
+    /// **Call this before dropping the volume.** Directory blocks and inodes
+    /// are written as they change, but the bitmaps, group descriptor counts and
+    /// superblock totals are buffered — so a volume dropped without flushing
+    /// leaves names pointing at inodes the bitmap never marked used. That is
+    /// corruption, not merely unsaved work.
+    ///
+    /// Dropping a dirty volume logs a warning through `tracing`, which is the
+    /// most an infallible `Drop` can do about an operation that can fail.
     pub async fn flush(&mut self) -> Result<()> {
         self.alloc.flush(&mut self.fs).await?;
         self.fs.flush_group_descs().await?;
@@ -495,6 +501,176 @@ impl<D: BlockDevice> Volume<D> {
         Ok(())
     }
 
+
+
+    /// Create a hard link: a second name for the same inode.
+    pub async fn link(&mut self, existing: &str, new_path: &str) -> Result<u32> {
+        let inum = self.lookup(existing).await?;
+        let inode = self.fs.read_inode(inum).await?;
+        if inode.is_dir() {
+            // Linking a directory would make the tree a graph, and every
+            // checker in existence treats that as corruption.
+            return Err(Error::IsADirectory(existing.into()));
+        }
+
+        let (parent_path, name) = split_path(new_path)?;
+        let parent_ino = self.lookup(&parent_path).await?;
+        {
+            let parent = self.fs.read_inode(parent_ino).await?;
+            if self.fs.lookup(&parent, name.as_bytes()).await?.is_some() {
+                return Err(Error::AlreadyExists(new_path.into()));
+            }
+        }
+
+        self.link_into(parent_ino, name.as_bytes(), inum).await?;
+
+        let mut inode = self.fs.read_inode(inum).await?;
+        inode.links_count += 1;
+        inode.ctime = self.now;
+        self.fs.write_inode(inum, &inode).await?;
+        Ok(inum)
+    }
+
+    /// Move or rename a file or directory.
+    ///
+    /// Replacing an existing name is allowed for files, as it is on any unix
+    /// filesystem; replacing a non-empty directory is not.
+    pub async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
+        let inum = self.lookup(from).await?;
+        let (from_parent_path, from_name) = split_path(from)?;
+        let (to_parent_path, to_name) = split_path(to)?;
+        let from_parent = self.lookup(&from_parent_path).await?;
+        let to_parent = self.lookup(&to_parent_path).await?;
+
+        let moving = self.fs.read_inode(inum).await?;
+        let is_dir = moving.is_dir();
+
+        // A directory cannot be moved inside itself; the subtree would be
+        // unreachable and its link counts unrecoverable.
+        if is_dir && self.is_ancestor(inum, to_parent).await? {
+            return Err(Error::InvalidPath(format!(
+                "cannot move {from} inside itself"
+            )));
+        }
+
+        // Clear the destination if something is already there.
+        if let Some(existing) = self.fs.resolve_path(to).await? {
+            if existing != inum {
+                let target = self.fs.read_inode(existing).await?;
+                if target.is_dir() {
+                    let entries = self.fs.read_dir(&target).await?;
+                    if !dir::is_empty(&entries) {
+                        return Err(Error::NotEmpty(to.into()));
+                    }
+                    self.rmdir(to).await?;
+                } else {
+                    self.unlink(to).await?;
+                }
+            } else {
+                return Ok(());
+            }
+        }
+
+        self.link_into(to_parent, to_name.as_bytes(), inum).await?;
+        self.unlink_from(from_parent, from_name.as_bytes()).await?;
+
+        // A directory carries a link to its parent through "..", so moving one
+        // between directories moves that link too.
+        if is_dir && from_parent != to_parent {
+            self.repoint_dotdot(inum, to_parent).await?;
+
+            let mut old = self.fs.read_inode(from_parent).await?;
+            old.links_count = old.links_count.saturating_sub(1);
+            old.ctime = self.now;
+            self.fs.write_inode(from_parent, &old).await?;
+
+            let mut new = self.fs.read_inode(to_parent).await?;
+            new.links_count += 1;
+            new.ctime = self.now;
+            self.fs.write_inode(to_parent, &new).await?;
+        }
+
+        let mut moved = self.fs.read_inode(inum).await?;
+        moved.ctime = self.now;
+        self.fs.write_inode(inum, &moved).await?;
+        Ok(())
+    }
+
+    /// Write `data` at `offset`, leaving the rest of the file alone.
+    ///
+    /// Extends the file if the write runs past the end, and leaves a hole if
+    /// the offset is past it.
+    pub async fn write_at(&mut self, path: &str, offset: u64, data: &[u8]) -> Result<()> {
+        let inum = match self.fs.resolve_path(path).await? {
+            Some(inum) => inum,
+            None => self.write_with(path, &[], &Attrs::default()).await?,
+        };
+        let inode = self.fs.read_inode(inum).await?;
+        if inode.is_dir() {
+            return Err(Error::IsADirectory(path.into()));
+        }
+
+        // Read, splice, write back. Whole-file rewrite is the honest
+        // implementation until a block-granular path is worth the complexity;
+        // an image builder writes files once.
+        let mut whole = self.fs.read_file(&inode).await?;
+        let end = (offset + data.len() as u64) as usize;
+        if whole.len() < end {
+            whole.resize(end, 0);
+        }
+        whole[offset as usize..end].copy_from_slice(data);
+        self.write_data(inum, &whole).await
+    }
+
+    /// Whether `ancestor` is at or above `of` in the tree.
+    async fn is_ancestor(&self, ancestor: u32, of: u32) -> Result<bool> {
+        let mut at = of;
+        for _ in 0..4096 {
+            if at == ancestor {
+                return Ok(true);
+            }
+            if at == ino::ROOT {
+                return Ok(false);
+            }
+            let inode = self.fs.read_inode(at).await?;
+            match self.fs.lookup(&inode, b"..").await? {
+                Some(parent) if parent != at => at = parent,
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
+    }
+
+    /// Point a directory's ".." at a new parent.
+    async fn repoint_dotdot(&mut self, dir_ino: u32, new_parent: u32) -> Result<()> {
+        let with_tail = self.fs.has_metadata_csum();
+        let dir_inode = self.fs.read_inode(dir_ino).await?;
+        let list = map::read_block_list(&self.fs, &dir_inode).await?;
+
+        for &block in &list {
+            if block == map::HOLE {
+                continue;
+            }
+            let mut buf = self.fs.read_block(block).await?;
+            let limit = buf.len() - if with_tail { dirent::TAIL_LEN } else { 0 };
+            let mut at = 0usize;
+            while at + dirent::ENTRY_HEADER_LEN <= limit {
+                let entry = dirent::DirEntry::decode(&buf[at..limit]).map_err(Error::Fs)?;
+                if entry.rec_len == 0 {
+                    break;
+                }
+                if entry.name == b".." {
+                    mkfs_ext4::bytes::put_u32(&mut buf, at, new_parent);
+                    self.fs
+                        .stamp_dir_block(&mut buf, dir_ino, dir_inode.generation);
+                    self.fs.write_block(block, &buf).await?;
+                    return Ok(());
+                }
+                at += entry.rec_len as usize;
+            }
+        }
+        Ok(())
+    }
 
     /// Create a device node, FIFO or socket.
     ///
@@ -817,6 +993,18 @@ impl<D: BlockDevice> Volume<D> {
         }
 
         Err(Error::NotFound(String::from_utf8_lossy(name).into()))
+    }
+}
+
+impl<D: BlockDevice> Drop for Volume<D> {
+    fn drop(&mut self) {
+        if self.alloc.cache.is_dirty() {
+            tracing::warn!(
+                "fio-ext4: Volume dropped with unflushed changes — the block and \
+                 inode bitmaps were not written, so the filesystem on this device \
+                 is inconsistent. Call Volume::flush().await before dropping."
+            );
+        }
     }
 }
 

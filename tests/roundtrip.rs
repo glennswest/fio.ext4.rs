@@ -522,3 +522,126 @@ async fn ownership_is_thirty_two_bit() {
     drop(vol);
     assert_clean(&dev, "after high uids").await;
 }
+
+#[tokio::test]
+async fn hard_links_share_one_inode() {
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    let a = vol.write("/a", b"shared contents").await.unwrap();
+    vol.mkdir("/d").await.unwrap();
+    let b = vol.link("/a", "/d/b").await.unwrap();
+    vol.flush().await.unwrap();
+
+    assert_eq!(a, b, "a hard link is the same inode");
+    assert_eq!(vol.stat("/a").await.unwrap().links, 2);
+    assert_eq!(vol.read("/d/b").await.unwrap(), b"shared contents");
+
+    // Removing one name leaves the other, and the contents.
+    vol.unlink("/a").await.unwrap();
+    vol.flush().await.unwrap();
+    assert!(!vol.exists("/a").await.unwrap());
+    assert_eq!(vol.read("/d/b").await.unwrap(), b"shared contents");
+    assert_eq!(vol.stat("/d/b").await.unwrap().links, 1);
+
+    // Linking a directory would turn the tree into a graph.
+    assert!(matches!(vol.link("/d", "/e").await, Err(Error::IsADirectory(_))));
+
+    drop(vol);
+    assert_clean(&dev, "after hard links").await;
+}
+
+#[tokio::test]
+async fn rename_moves_files_and_directories() {
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    vol.mkdir_all("/one").await.unwrap();
+    vol.mkdir_all("/two").await.unwrap();
+    vol.write("/one/f", b"contents").await.unwrap();
+
+    // Within a directory.
+    vol.rename("/one/f", "/one/g").await.unwrap();
+    assert_eq!(vol.read("/one/g").await.unwrap(), b"contents");
+    assert!(!vol.exists("/one/f").await.unwrap());
+
+    // Across directories.
+    vol.rename("/one/g", "/two/h").await.unwrap();
+    assert_eq!(vol.read("/two/h").await.unwrap(), b"contents");
+
+    // Replacing an existing file is allowed.
+    vol.write("/two/target", b"old").await.unwrap();
+    vol.rename("/two/h", "/two/target").await.unwrap();
+    assert_eq!(vol.read("/two/target").await.unwrap(), b"contents");
+
+    // A directory move carries its ".." with it.
+    vol.mkdir("/one/sub").await.unwrap();
+    let before = vol.stat("/two").await.unwrap().links;
+    vol.rename("/one/sub", "/two/sub").await.unwrap();
+    vol.flush().await.unwrap();
+    assert!(vol.exists("/two/sub").await.unwrap());
+    assert_eq!(vol.stat("/two").await.unwrap().links, before + 1);
+
+    // And a directory cannot be moved inside itself.
+    vol.mkdir_all("/deep/inner").await.unwrap();
+    assert!(vol.rename("/deep", "/deep/inner/deep").await.is_err());
+    vol.flush().await.unwrap();
+
+    drop(vol);
+    assert_clean(&dev, "after renames").await;
+}
+
+#[tokio::test]
+async fn writes_at_an_offset() {
+    let dev = fresh(Profile::Ext4, 16 * MIB).await;
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    vol.write("/f", b"AAAAAAAAAA").await.unwrap();
+    vol.write_at("/f", 3, b"BBB").await.unwrap();
+    vol.flush().await.unwrap();
+    assert_eq!(vol.read("/f").await.unwrap(), b"AAABBBAAAA");
+
+    // Writing past the end extends the file.
+    vol.write_at("/f", 12, b"CC").await.unwrap();
+    vol.flush().await.unwrap();
+    let out = vol.read("/f").await.unwrap();
+    assert_eq!(out.len(), 14);
+    assert_eq!(&out[12..], b"CC");
+    assert_eq!(&out[10..12], b"\0\0", "the gap reads as zeroes");
+
+    drop(vol);
+    assert_clean(&dev, "after offset writes").await;
+}
+
+/// ext2 and ext3 reach past double indirection at 4 TiB; the write path now
+/// builds the third level rather than refusing.
+#[tokio::test]
+async fn triple_indirection_is_built_when_needed() {
+    // 1 KiB blocks: direct 12 + single 256 + double 65536 blocks, so a file
+    // past ~64 MiB needs the third level. Use a small block size to reach it.
+    let dev = MemDevice::new(96 * MIB);
+    let params = Params::new(Profile::Ext2)
+        .uuid(*b"0123456789abcdef")
+        .mkfs_time(1_700_000_000)
+        .block_size(1024);
+    format(&dev, &params).await.unwrap();
+
+    let mut vol = Volume::open(&dev).await.unwrap();
+    vol.set_time(1_700_000_000);
+
+    // Just past 12 + 256 + 256*256 blocks of 1 KiB = 65804 KiB.
+    let size = (12 + 256 + 256 * 256 + 40) * 1024;
+    let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+    vol.write("/huge.bin", &data).await.unwrap();
+    vol.flush().await.unwrap();
+
+    let back = vol.read("/huge.bin").await.unwrap();
+    assert_eq!(back.len(), data.len());
+    assert_eq!(back, data, "every block must survive triple indirection");
+
+    drop(vol);
+    assert_clean(&dev, "after a triple-indirect file").await;
+}

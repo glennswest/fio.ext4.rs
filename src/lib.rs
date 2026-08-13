@@ -41,13 +41,10 @@
 //!
 //! # What it does not do yet
 //!
-//! Hard links, symlinks, rename, extended attributes, and files large enough to
-//! need triple indirection. Directory indexing (`dir_index`) is read but not
-//! maintained, so very large directories are appended linearly.
-//!
-//! Permissions and ownership *are* handled — see [`Attrs`], [`Volume::chmod`]
-//! and [`Volume::chown`]. Extended attributes are not, and POSIX ACLs ride on
-//! extended attributes, so those are absent too.
+//! Extended attributes, and the POSIX ACLs and SELinux labels that ride on
+//! them. Directory indexing (`dir_index`) is read but not maintained, so very
+//! large directories are appended linearly — a correctness-preserving
+//! trade that costs lookup time, not integrity.
 
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]

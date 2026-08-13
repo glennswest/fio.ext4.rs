@@ -244,18 +244,15 @@ async fn write_indirect_map<D: BlockDevice>(
     // Double indirect.
     let dind_start = ind_end;
     let dind_capacity = per_block * per_block;
-    if list.len() > dind_start + dind_capacity {
-        return Err(Error::Unsupported(
-            "files needing triple indirection are not written yet".into(),
-        ));
-    }
     let dind = alloc.alloc_block(fs, goal).await?;
     meta_used += 1;
     let mut dind_buf = vec![0u8; block_size as usize];
 
     let mut logical = dind_start;
     let mut child = 0usize;
-    while logical < list.len() {
+    // A double indirect block holds `per_block` pointers and no more; past
+    // that the file needs the third level.
+    while logical < list.len() && child < per_block {
         let end = (logical + per_block).min(list.len());
         let leaf = alloc.alloc_block(fs, goal).await?;
         meta_used += 1;
@@ -270,6 +267,56 @@ async fn write_indirect_map<D: BlockDevice>(
     }
     fs.write_block(dind, &dind_buf).await?;
     pointers[NDIR_BLOCKS + 1] = dind as u32;
+
+    if list.len() <= dind_start + dind_capacity {
+        inode.set_block_pointers(&pointers);
+        return Ok(meta_used);
+    }
+
+    // Triple indirect: a block of double-indirect blocks, each a block of
+    // indirect blocks. At 4 KiB blocks this reaches 4 TiB, which is the
+    // ceiling of the block-mapped format itself.
+    let tind_start = dind_start + dind_capacity;
+    let tind = alloc.alloc_block(fs, goal).await?;
+    meta_used += 1;
+    let mut tind_buf = vec![0u8; block_size as usize];
+
+    let mut logical = tind_start;
+    let mut grandchild = 0usize;
+    while logical < list.len() && grandchild < per_block {
+        let child_dind = alloc.alloc_block(fs, goal).await?;
+        meta_used += 1;
+        let mut child_dind_buf = vec![0u8; block_size as usize];
+
+        let mut child = 0usize;
+        while logical < list.len() && child < per_block {
+            let end = (logical + per_block).min(list.len());
+            let leaf = alloc.alloc_block(fs, goal).await?;
+            meta_used += 1;
+            let mut leaf_buf = vec![0u8; block_size as usize];
+            for (i, l) in (logical..end).enumerate() {
+                put_u32(&mut leaf_buf, i * 4, list[l] as u32);
+            }
+            fs.write_block(leaf, &leaf_buf).await?;
+            put_u32(&mut child_dind_buf, child * 4, leaf as u32);
+            child += 1;
+            logical = end;
+        }
+
+        fs.write_block(child_dind, &child_dind_buf).await?;
+        put_u32(&mut tind_buf, grandchild * 4, child_dind as u32);
+        grandchild += 1;
+    }
+    fs.write_block(tind, &tind_buf).await?;
+    pointers[NDIR_BLOCKS + 2] = tind as u32;
+
+    if logical < list.len() {
+        return Err(Error::Unsupported(format!(
+            "a {}-block file exceeds what triple indirection addresses at \
+             {block_size}-byte blocks",
+            list.len()
+        )));
+    }
 
     inode.set_block_pointers(&pointers);
     Ok(meta_used)
