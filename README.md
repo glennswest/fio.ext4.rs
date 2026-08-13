@@ -10,7 +10,7 @@ Not on crates.io; take it by git, pinned to a tag. `fio-ext4` re-exports
 
 ```toml
 [dependencies]
-fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.0.2" }
+fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.1.0" }
 ```
 
 ```rust
@@ -33,6 +33,8 @@ Or from the shell:
 fio-ext4 disk.img put ./hostname /etc/hostname
 fio-ext4 disk.img ls -l /etc
 fio-ext4 disk.img cat /etc/hostname
+fio-ext4 disk.img untar rootfs.tar
+fio-ext4 disk.img tar -z backup.tar.gz
 ```
 
 ## Why
@@ -77,11 +79,51 @@ vol.mknod("/dev/null", Special::CharDevice { major: 1, minor: 3 },
 vol.symlink("/bin", "usr/bin").await?;
 ```
 
+## Archives
+
+A tar archive can be streamed straight into a filesystem, or read back out of
+one. Everything an image needs survives: modes and the setuid bit, ownership,
+symlinks, hard links, device nodes, timestamps, and extended attributes
+including SELinux labels.
+
+```rust
+use fio_ext4::archive::{self, UnpackOptions};
+
+// An image and an archive, by path.
+archive::unpack("disk.img", Some("rootfs.tar"), &UnpackOptions::default()).await?;
+
+// Or a pipe — None, or "-", is standard input. gzip is detected.
+archive::unpack("disk.img", None::<&str>, &UnpackOptions::default()).await?;
+
+// And back out.
+archive::pack("disk.img", Some("backup.tar"), &PackOptions::default()).await?;
+```
+
+Nothing is held in memory. The stream can be a file, a pipe, a socket, or a
+container layer arriving from a registry, and an archive larger than RAM is not
+a problem — which is what makes this usable on a device that does not have much
+of either.
+
+Container layers stack:
+
+```rust
+vol.unpack_tar_layer(tar::Io::new(layer), "/").await?;
+```
+
+That obeys the whiteout markers, so a layer can delete as well as add:
+`.wh.<name>` removes a name from the layers below, and `.wh..wh..opq` hides
+everything already in its directory. A file that replaces one from a lower
+layer gets a fresh inode, so it inherits none of the old mode, owner or labels.
+
+For a byte-level interface — `Reader`, `Writer`, and a `Source`/`Sink` pair
+that needs no runtime, no pinning and no allocation to implement — see the
+[`tar`](src/tar.rs) module.
+
 ## Not yet
 
-Hard links, rename, extended attributes (and the POSIX ACLs that ride on them),
-and writing files large enough to need triple indirection. `dir_index` is read
-but not maintained, so large directories are appended linearly.
+`dir_index` is read but not maintained, so large directories are appended
+linearly — a correctness-preserving trade that costs lookup time, not
+integrity.
 
 ## Licence
 

@@ -2,29 +2,33 @@
 
 ## [Unreleased]
 
-### 2026-08-13
-- **feat:** Tar archives, streamed in and out — `tar::Reader`, `tar::Writer`,
+## [v1.1.0] — 2026-08-13
+
+### Added
+- **Tar archives, streamed in and out — `tar::Reader`, `tar::Writer`,
   `Volume::unpack_tar_from`, `Volume::pack_tar_to`. ustar, GNU long names and
   PAX, including `SCHILY.xattr.*`, so modes, owners, symlinks, hard links,
   device nodes and SELinux labels all survive. Nothing is held in memory, so
   the source or destination can be a file, a pipe, or a container layer moving
   to or from a registry.
-- **feat:** OCI layer semantics — `Volume::unpack_tar_layer` obeys `.wh.<name>`
+- **OCI layer semantics** — `Volume::unpack_tar_layer` obeys `.wh.<name>`
   and `.wh..wh..opq` whiteout markers, so layers can be stacked in order.
-- **feat:** `archive` module — whole-archive operations in terms of paths:
+- **`archive` module** — whole-archive operations in terms of paths:
   `archive::unpack` and `archive::pack` take an image and an archive, where
   `None` or `-` is standard input or output. gzip is detected and handled.
-- **feat:** `untar` and `tar` subcommands on the `fio-ext4` CLI, which are the
+- **`untar` and `tar` subcommands** on the `fio-ext4` CLI, which are the
   above with argument parsing in front.
-- **feat:** `Volume::remove_all` and `Volume::device_numbers`.
-- **fix:** Deleting a file or directory whose extended attributes lived in a
+- `Volume::remove_all` and `Volume::device_numbers`.
+
+### Fixed
+- Deleting a file or directory whose extended attributes lived in a
   block of their own leaked that block. `e2fsck` reported it as "block bitmap
   differences" — a block marked in use and owned by nothing.
-- **fix:** Writing over an existing file kept the old inode, and with it the
+- Writing over an existing file kept the old inode, and with it the
   old mode, owner and extended attributes. Correct for an ordinary overwrite,
   wrong for a layer replacing a file: the replacement inherited the label of
   what it replaced. Unpacking now always creates a fresh inode.
-- **fix:** `pack` now walks depth-first in sorted order rather than emitting a
+- `pack` now walks depth-first in sorted order rather than emitting a
   stack's worth of directories first, so archives are conventional and the same
   tree always produces the same bytes.
 
