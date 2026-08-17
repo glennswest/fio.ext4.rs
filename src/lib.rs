@@ -47,11 +47,11 @@
 //! and [`tar`] for the streaming one. The stream can be a file, a pipe, or a
 //! container layer arriving from a registry.
 //!
-//! # What it does not do yet
+//! # Large directories
 //!
-//! Directory indexing (`dir_index`) is read but not maintained, so very large
-//! directories are appended linearly — a correctness-preserving trade that
-//! costs lookup time, not integrity.
+//! A directory that outgrows one block becomes hash-indexed (`dir_index`) and
+//! stays indexed as it changes, so names are added, found and removed through
+//! the tree rather than by reading the whole directory.
 
 #![deny(missing_docs)]
 #![forbid(unsafe_code)]
@@ -59,6 +59,7 @@
 mod alloc;
 pub mod tar;
 mod dir;
+mod index;
 mod map;
 
 pub mod archive;

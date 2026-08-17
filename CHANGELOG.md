@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [v1.2.0] — 2026-08-14
+
+### Added
+- **Hash-indexed directories (`dir_index`) are now maintained**, not just read.
+  A directory that outgrows one block becomes a tree, and stays one: names are
+  added to the single leaf their hash selects, removed from it, and looked up
+  through it. Filling a directory with *n* names was *n²* block reads and is now
+  linear.
+
+  The tree is grown the way `e2fsck -D` grows one rather than the way the
+  kernel does: when a leaf will not take another name, the whole index is
+  rebuilt from the directory's contents, sorted by hash and repacked. That is
+  one code path for the first conversion and every growth after it, instead of
+  a leaf split, a node split and a root promotion that each have to be right
+  alone. Leaves are packed with a fifth of each block left free, so a rebuild
+  happens about once per two hundred names.
+
+  Verified three ways, because a directory index is the structure where
+  "it looks right" proves least: our own lookups find every name, `e2fsck -fn`
+  from e2fsprogs 1.47.3 accepts the tree, and `debugfs -R htree_dump` reads it
+  back with the counts, limits and checksums it expects.
+
+### Fixed
+- Removing a name from an indexed directory walked its root block as though it
+  were an ordinary directory block. The root's `..` entry runs to the very end
+  of its block — an index block carries no dirent tail — so the walk failed on
+  the first entry it read.
+
 ## [v1.1.0] — 2026-08-13
 
 ### Added

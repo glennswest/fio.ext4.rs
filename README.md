@@ -10,7 +10,7 @@ Not on crates.io; take it by git, pinned to a tag. `fio-ext4` re-exports
 
 ```toml
 [dependencies]
-fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.1.0" }
+fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.2.0" }
 ```
 
 ```rust
@@ -119,11 +119,18 @@ For a byte-level interface — `Reader`, `Writer`, and a `Source`/`Sink` pair
 that needs no runtime, no pinning and no allocation to implement — see the
 [`tar`](src/tar.rs) module.
 
-## Not yet
+## Large directories
 
-`dir_index` is read but not maintained, so large directories are appended
-linearly — a correctness-preserving trade that costs lookup time, not
-integrity.
+Directories that outgrow a single block become hash-indexed (`dir_index`), and
+stay indexed as they change: a name is added to, found in, and removed from the
+one leaf its hash selects. Filling a directory with *n* names costs *n* block
+reads rather than *n²*.
+
+The tree is grown the way `e2fsck -D` grows one — when a leaf will not take
+another name the index is rebuilt and repacked — rather than by splitting a
+leaf at a time as the kernel does. One code path serves the first conversion
+and every growth after it, and leaves are left a fifth empty so a rebuild is
+needed about once per two hundred names.
 
 ## Licence
 

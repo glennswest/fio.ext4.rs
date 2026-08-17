@@ -230,9 +230,9 @@ impl Stat {
 
 /// An open filesystem that can be read and written.
 pub struct Volume<D: BlockDevice> {
-    fs: Filesystem<D>,
-    alloc: Allocator,
-    now: u32,
+    pub(crate) fs: Filesystem<D>,
+    pub(crate) alloc: Allocator,
+    pub(crate) now: u32,
 }
 
 impl<D: BlockDevice> Volume<D> {
@@ -1597,6 +1597,13 @@ impl<D: BlockDevice> Volume<D> {
         let block_size = self.fs.block_size() as u64;
 
         let mut dir_inode = self.fs.read_inode(dir_ino).await?;
+
+        // An indexed directory is not searched for a gap; the name's hash says
+        // which one block it can go in.
+        if self.is_indexed(&dir_inode) {
+            return self.indexed_link(dir_ino, name, target, ft).await;
+        }
+
         let mut list = map::read_block_list(&self.fs, &dir_inode).await?;
 
         // Try each existing block before growing the directory.
@@ -1611,6 +1618,13 @@ impl<D: BlockDevice> Volume<D> {
                 self.fs.write_block(block, &buf).await?;
                 return Ok(());
             }
+        }
+
+        // No room anywhere. On a filesystem that allows it, this is the point
+        // at which the directory stops being a list and becomes a tree — the
+        // same point the kernel picks.
+        if self.indexing_available() {
+            return self.rebuild_index(dir_ino, Some((name, target, ft))).await;
         }
 
         // No room: add a block.
@@ -1647,6 +1661,13 @@ impl<D: BlockDevice> Volume<D> {
     async fn unlink_from(&mut self, dir_ino: u32, name: &[u8]) -> Result<u32> {
         let with_tail = self.fs.has_metadata_csum();
         let dir_inode = self.fs.read_inode(dir_ino).await?;
+
+        // An indexed directory holds the name in exactly one leaf, and its
+        // root and interior blocks are not directory blocks at all.
+        if self.is_indexed(&dir_inode) {
+            return self.indexed_unlink(dir_ino, name).await;
+        }
+
         let list = map::read_block_list(&self.fs, &dir_inode).await?;
 
         for &block in &list {
