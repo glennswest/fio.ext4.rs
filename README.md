@@ -132,6 +132,13 @@ leaf at a time as the kernel does. One code path serves the first conversion
 and every growth after it, and leaves are left a fifth empty so a rebuild is
 needed about once per two hundred names.
 
+Verified against a real kernel at both 1 KiB and 4 KiB blocks, with 7,500
+names: `e2fsck -fn` clean, every name resolved by the kernel *through the
+index* rather than by listing, a name that was never there still absent, the
+kernel able to add its own name to our tree, and `e2fsck` clean again
+afterwards. `debugfs -R htree_dump` reads the tree back with the counts,
+limits and checksums it expects.
+
 ## Licence
 
 `MIT OR Apache-2.0`, at your option — matching `mkfs-ext4` and the rest of the
