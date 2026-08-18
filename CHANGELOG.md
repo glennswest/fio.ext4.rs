@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **fix:** an extent leaf's checksum was written at the end of the block
+  instead of at `EXT4_EXTENT_TAIL_OFFSET` — immediately after the space
+  `eh_max` entries occupy — and the checksum covered the wrong span with it.
+  The two coincide at 1 KiB and 4 KiB blocks, where exactly four bytes are left
+  over after the header and entries, and differ by four bytes at 2 KiB, 8 KiB
+  and 32 KiB, where eight are. On those block sizes **every file large enough
+  to need an extent block was unreadable to any real ext4 reader**: `e2fsck`
+  1.47.3 reports "extent block passes checks, but checksum does not match
+  extent", and Linux 6.17 refuses the file with `EXT4-fs error … extent tree
+  corrupted` and EIO. Our own reader computed the offset the same wrong way and
+  so saw nothing wrong, which is why this survived a clean `fsck` and a
+  verified round trip. Found while investigating #2. Covered by
+  `tests/extent_tree.rs` across 1 KiB, 2 KiB and 4 KiB, and confirmed on a real
+  kernel with the new `examples/extent_image.rs`.
+
 ## [v1.3.0] — 2026-08-18
 
 ### Changed

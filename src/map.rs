@@ -187,6 +187,17 @@ async fn write_extent_map<D: BlockDevice>(
 }
 
 /// Stamp an extent block's checksum tail, when the filesystem carries one.
+///
+/// The tail does not live at the end of the block. It sits immediately after
+/// the space `eh_max` entries would occupy — `EXT4_EXTENT_TAIL_OFFSET`, which
+/// is what both the kernel and `e2fsck` compute — and the checksum covers only
+/// the bytes before it. The two coincide when the leftover after the header
+/// divides evenly enough: at 1 KiB and 4 KiB blocks exactly four bytes remain,
+/// so writing at `len - 4` happened to be right. At 2 KiB, 8 KiB and 32 KiB
+/// eight remain, the tail belongs four bytes earlier, and every file large
+/// enough to need an extent block became unreadable to any reader that checks
+/// the checksum — `e2fsck` reporting "checksum does not match extent" and the
+/// kernel refusing the file with EIO.
 fn stamp_extent_block<D: BlockDevice>(
     fs: &Filesystem<D>,
     buf: &mut [u8],
@@ -196,7 +207,9 @@ fn stamp_extent_block<D: BlockDevice>(
     if !fs.has_metadata_csum() {
         return;
     }
-    let at = buf.len() - extent::TAIL_LEN;
+    let max = ExtentHeader::decode(buf).map(|h| h.max as usize).unwrap_or(0);
+    let at = extent::HEADER_LEN + max * extent::ENTRY_LEN;
+    debug_assert!(at + extent::TAIL_LEN <= buf.len(), "the tail must fit in the block");
     let crc = mkfs_ext4::csum::extent_block_csum(fs.csum_seed(), inum, generation, &buf[..at]);
     put_u32(buf, at, crc);
 }
