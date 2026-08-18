@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [v1.3.1] — 2026-08-18
+
+### Fixed
 - **fix:** an extent leaf's checksum was written at the end of the block
   instead of at `EXT4_EXTENT_TAIL_OFFSET` — immediately after the space
   `eh_max` entries occupy — and the checksum covered the wrong span with it.

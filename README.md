@@ -10,7 +10,7 @@ Not on crates.io; take it by git, pinned to a tag. `fio-ext4` re-exports
 
 ```toml
 [dependencies]
-fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.3.0" }
+fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.3.1" }
 ```
 
 ```rust
