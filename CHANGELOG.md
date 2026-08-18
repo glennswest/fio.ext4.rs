@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+## [v1.3.0] — 2026-08-18
+
+### Changed
 - **chore(deps):** pinned to `mkfs-ext4` v1.3.0, which stops writing the
   bitmaps and reserved GDT blocks a reader never reads — a 1 TiB format writes
   133.9 MiB less in 45% fewer calls — and reads a `BLOCK_UNINIT` or
