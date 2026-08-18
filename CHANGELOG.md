@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **chore(deps):** pinned to `mkfs-ext4` v1.3.0, which stops writing the
+  bitmaps and reserved GDT blocks a reader never reads — a 1 TiB format writes
+  133.9 MiB less in 45% fewer calls — and reads a `BLOCK_UNINIT` or
+  `INODE_UNINIT` group's bitmap the way its flag says to, computing it from
+  the geometry rather than trusting a block that was never written. The second
+  is the one that reaches this crate: allocation reads those bitmaps, and on a
+  medium that does not read back as zeros the old behaviour saw a bitmap full
+  of whatever was there before.
+
 ## [v1.2.0] — 2026-08-14
 
 ### Added

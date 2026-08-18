@@ -23,7 +23,7 @@ path = "src/lib.rs"
 #
 # Pinned to a tag rather than a branch, so a consumer's build is reproducible:
 # floating on main means two builds a day apart can resolve differently.
-mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v1.2.0", default-features = false }
+mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v1.3.0", default-features = false }
 
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "rt", "sync", "macros"] }
 async-trait = "0.1"
