@@ -207,9 +207,28 @@ fn stamp_extent_block<D: BlockDevice>(
     if !fs.has_metadata_csum() {
         return;
     }
-    let max = ExtentHeader::decode(buf).map(|h| h.max as usize).unwrap_or(0);
-    let at = extent::HEADER_LEN + max * extent::ENTRY_LEN;
-    debug_assert!(at + extent::TAIL_LEN <= buf.len(), "the tail must fit in the block");
+    // `extent::tail_offset` is the same `EXT4_EXTENT_TAIL_OFFSET` mkfs-ext4
+    // stamps the journal's leaf with. Deriving it here a second time is how
+    // the two came to disagree in the first place.
+    let max = match ExtentHeader::decode(buf) {
+        Ok(header) => header.max,
+        // We encoded this header a few lines ago, so failing to read it back
+        // means the buffer is not the node we think it is. Writing a checksum
+        // anyway puts four bytes at offset 12, over the first entry.
+        Err(e) => {
+            debug_assert!(false, "an extent node we just encoded failed to decode: {e}");
+            return;
+        }
+    };
+    let at = extent::tail_offset(max);
+    if at + extent::TAIL_LEN > buf.len() {
+        // `max` claims more entries than the block holds, so there is nowhere
+        // valid for the tail. Leaving it unwritten fails a check; writing it
+        // out of bounds panics, and writing it anywhere else is a filesystem
+        // no reader accepts.
+        debug_assert!(false, "eh_max {max} puts the tail past the end of the block");
+        return;
+    }
     let crc = mkfs_ext4::csum::extent_block_csum(fs.csum_seed(), inum, generation, &buf[..at]);
     put_u32(buf, at, crc);
 }
