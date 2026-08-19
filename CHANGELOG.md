@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+## [v1.3.2] — 2026-08-18
+
+### Fixed
+- **fix:** `stamp_extent_block` derives the tail offset from
+  `mkfs_ext4::structs::extent::tail_offset` rather than recomputing it, which
+  is how the two crates came to disagree about where the tail goes in the
+  first place. It also no longer falls back to `eh_max = 0` when the header
+  fails to decode: that wrote the checksum at offset 12, over the first
+  extent entry, in a release build where the `debug_assert` is absent. A
+  header we encoded a few lines earlier failing to decode means the buffer is
+  not the node we think it is, so stamping nothing is the only safe answer.
+
+### Changed
+- **chore:** depend on `mkfs-ext4` v1.4.0, which brings the journal extent-leaf
+  tail fix (mkfs.ext4.rs#1) and a `fsck` that now verifies the checksum on
+  every extent block. Every test here ends by checking the filesystem, so that
+  check now runs against everything this crate writes. The pin was still on
+  v1.3.0 and so did not have the journal fix at all.
+
+### Documentation
+- **docs:** record what #2 turned out to be. A filesystem written here is read
+  correctly by Linux 6.17 and `e2fsck` 1.47.3 — a busybox layer unpacked into
+  it mounts, `/lib64 -> lib` resolves, and the dynamic binaries execute. Under
+  lwext4 the same image returns ENOENT for any path that traverses a symlink,
+  because lwext4 does not follow symlinks during path resolution. A filesystem
+  made by real `mke2fs` and written by the real kernel fails lwext4 the same
+  way, which is what settles it. Also: lwext4 refuses to mount a default
+  modern ext4 at all, because `metadata_csum_seed` (incompat `0x2000`) is
+  outside its supported set — and real `mke2fs` 1.47.3 sets that by default
+  too, so our image and its image are refused identically.
+
 ## [v1.3.1] — 2026-08-18
 
 ### Fixed
