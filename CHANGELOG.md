@@ -262,3 +262,9 @@ additive.
   before compiling anything. A `[patch]` section keeps local development
   against the sibling checkout unchanged — patches apply only to the crate
   being built, so a downstream consumer never sees it.
+
+### 2026-08-19
+- **chore(deps):** mkfs-ext4 v2.0.0, with `features = ["std"]` now required.
+  `std` became a default feature there so a UEFI driver can link its synchronous
+  read path, which means `default-features = false` leaves the `no_std` core
+  rather than the whole crate. This crate is async and wants all of it.
