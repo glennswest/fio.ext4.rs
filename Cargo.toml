@@ -1,6 +1,6 @@
 [package]
 name = "fio-ext4"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2021"
 authors = ["Glenn West"]
 description = "Async userspace file I/O into an ext2/ext3/ext4 filesystem — read and write files with no kernel, no mount and no loop device"
@@ -27,7 +27,7 @@ path = "src/lib.rs"
 # feature so a UEFI driver can link the crate's synchronous read path, which
 # means `default-features = false` now leaves the `no_std` core rather than the
 # whole crate. This crate is async and wants all of it.
-mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v2.0.0", default-features = false, features = ["std"] }
+mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v2.0.4", default-features = false, features = ["std"] }
 
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "rt", "sync", "macros"] }
 async-trait = "0.1"

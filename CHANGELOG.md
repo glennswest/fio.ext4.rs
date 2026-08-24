@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [v1.4.1] — 2026-08-23
+
+### Changed
+- **chore(deps):** `mkfs-ext4` v2.0.0 → v2.0.4, which fixes a filesystem below
+  the journal size class's floor advertising a journal it does not have
+  (mkfs.ext4.rs#3). Both pins have to move together: this crate pins
+  `mkfs-ext4` by tag, and two tags are two cargo source ids, so a consumer
+  taking a mismatched pair resolves two copies and the `BlockDevice` trait
+  from one does not satisfy the other. Skip v2.0.3 — its manifest shipped
+  empty and cargo cannot resolve it.
+
 ## [v1.3.2] — 2026-08-18
 
 ### Fixed
