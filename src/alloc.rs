@@ -92,9 +92,22 @@ impl Allocator {
             let in_group = fs.group_block_count(group) as u64;
             let first = fs.group_first_block(group);
 
+            // Within the goal's group, start at the goal's own bit. A caller
+            // streaming a file passes the last block it got as the goal, so
+            // sequential allocation finds the next free bit immediately
+            // instead of re-walking the bitmap from bit 0 for every block —
+            // which is O(n) per block and O(n²) per file (issue #3). The
+            // wrap-around pass below still visits the bits before the goal,
+            // so a hole freed earlier in the group is not lost.
+            let from = if step == 0 && goal >= first && goal < first + in_group {
+                goal - first
+            } else {
+                0
+            };
+
             let bitmap = self.block_bitmap(fs, group).await?;
             let mut found = None;
-            for i in 0..in_group {
+            for i in (from..in_group).chain(0..from) {
                 if !Filesystem::<D>::test_bit(bitmap, i) {
                     Filesystem::<D>::set_bit(bitmap, i, true);
                     found = Some(first + i);

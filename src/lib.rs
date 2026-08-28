@@ -67,6 +67,7 @@ pub mod error;
 pub mod volume;
 
 pub use error::{Error, Result};
+pub use mkfs_ext4::cache::{CacheStats, CachedDevice};
 pub use mkfs_ext4::structs::xattr::Xattr;
 pub use volume::{Attrs, Entry, PackReport, Special, Stat, UnpackReport, Volume};
 

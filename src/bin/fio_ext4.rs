@@ -114,7 +114,9 @@ async fn main() -> anyhow::Result<()> {
     let device = FileDevice::open(&args.image)
         .await
         .map_err(|e| anyhow::anyhow!("cannot open {}: {e}", args.image))?;
-    let mut vol = Volume::open(device).await?;
+    // The write-back cache turns per-operation metadata churn into one write
+    // per flush; every mutating command below flushes before it exits.
+    let mut vol = Volume::open_cached(device).await?;
 
     match args.command {
         Command::Ls { path, long } => {

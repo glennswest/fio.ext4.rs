@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use mkfs_ext4::cache::CachedDevice;
 use mkfs_ext4::device::BlockDevice;
 use mkfs_ext4::fs::Filesystem;
 use mkfs_ext4::structs::dirent::{self, DirEntry};
@@ -244,6 +245,23 @@ impl<D: BlockDevice> Volume<D> {
             alloc: Allocator::new(),
             now: now_secs(),
         })
+    }
+
+    /// Open a filesystem on `device`, wrapped in a write-back block cache.
+    ///
+    /// The cache is [`mkfs_ext4::CachedDevice`]: hot metadata blocks stay
+    /// resident and reach the device once per [`Volume::flush`] instead of
+    /// once per operation, and streamed file data goes down as large coalesced
+    /// writes. Measured against a volume over NVMe/TCP this is the difference
+    /// between ~288 device operations per 4 KiB of payload and a handful per
+    /// megabyte (issue #3).
+    ///
+    /// The trade is durability between sync points: nothing is on the device
+    /// until [`Volume::flush`] — which this crate already requires before the
+    /// filesystem is consistent, so a consumer that flushes at its sync points
+    /// and treats a torn build as discard-and-rebuild loses nothing.
+    pub async fn open_cached(device: D) -> Result<Volume<CachedDevice<D>>> {
+        Volume::open(CachedDevice::new(device)).await
     }
 
     /// Fix the timestamp stamped onto new and modified files.
@@ -1123,7 +1141,11 @@ impl<D: BlockDevice> Volume<D> {
     ///
     /// Small files go down in a single write. Anything larger is streamed a
     /// chunk at a time, so unpacking a multi-gigabyte layer costs a buffer,
-    /// not the file.
+    /// not the file — and each of its blocks is allocated and written exactly
+    /// once, with the block map built once at the end. The path this replaced
+    /// pushed every chunk through [`Volume::write_at`], which reads the whole
+    /// file back and rewrites all of it per call: placing a 55 MB file that
+    /// way cost ~56 GB of device writes and as much again in reads (issue #3).
     async fn unpack_file<S: tar::Source>(
         &mut self,
         path: &str,
@@ -1134,28 +1156,65 @@ impl<D: BlockDevice> Volume<D> {
         const INLINE_LIMIT: usize = 1 << 20;
 
         let mut buf = vec![0u8; CHUNK];
-        let mut first = Vec::new();
-        while first.len() < INLINE_LIMIT {
+        let mut pending = Vec::new();
+        while pending.len() < INLINE_LIMIT {
             let n = reader.read(&mut buf).await?;
             if n == 0 {
                 // The whole file fitted; one write does it.
-                self.write_with(path, &first, attrs).await?;
+                self.write_with(path, &pending, attrs).await?;
                 return Ok(());
             }
-            first.extend_from_slice(&buf[..n]);
+            pending.extend_from_slice(&buf[..n]);
         }
 
-        self.write_with(path, &first, attrs).await?;
-        let mut at = first.len() as u64;
-        drop(first);
+        // Too big to gather. Create the file empty, then stream: every full
+        // block in hand is allocated next to the previous one and written,
+        // and only the not-yet-full tail waits in memory.
+        let inum = self.write_with(path, &[], attrs).await?;
+        let block_size = self.fs.block_size() as usize;
+        let mut list: Vec<u64> = Vec::new();
+        let mut size = 0u64;
         loop {
+            let full = pending.len() / block_size;
+            if full > 0 {
+                let goal = list.last().copied().unwrap_or(0);
+                let blocks = self
+                    .alloc
+                    .alloc_blocks(&mut self.fs, goal, full as u64)
+                    .await?;
+                for (i, &block) in blocks.iter().enumerate() {
+                    self.fs
+                        .write_block(block, &pending[i * block_size..(i + 1) * block_size])
+                        .await?;
+                }
+                list.extend_from_slice(&blocks);
+                size += (full * block_size) as u64;
+                pending.drain(..full * block_size);
+            }
             let n = reader.read(&mut buf).await?;
             if n == 0 {
                 break;
             }
-            self.write_at(path, at, &buf[..n]).await?;
-            at += n as u64;
+            pending.extend_from_slice(&buf[..n]);
         }
+        if !pending.is_empty() {
+            let goal = list.last().copied().unwrap_or(0);
+            let block = self.alloc.alloc_block(&mut self.fs, goal).await?;
+            let mut padded = vec![0u8; block_size];
+            padded[..pending.len()].copy_from_slice(&pending);
+            self.fs.write_block(block, &padded).await?;
+            list.push(block);
+            size += pending.len() as u64;
+        }
+
+        let mut inode = self.fs.read_inode(inum).await?;
+        let meta =
+            map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &list).await?;
+        inode.size = size;
+        inode.blocks = (list.len() as u64 + meta) * (block_size as u64 / 512);
+        inode.mtime = self.now;
+        inode.ctime = self.now;
+        self.fs.write_inode(inum, &inode).await?;
         Ok(())
     }
 
