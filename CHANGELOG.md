@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+## [v1.5.0] — 2026-08-27
+
+### Fixed
+- **fix:** the measured 280x–1065x write amplification unpacking layers (#3,
+  mkfs.ext4.rs#4). Three causes, three fixes:
+  - `unpack_file` pushed every 64 KiB chunk through `write_at`, which reads
+    the whole file back and rewrites all of it per call — O(n²) device bytes,
+    and the superlinearity in the measurement (~56 GB written to place a
+    55 MB file). The streaming path now allocates and writes each data block
+    exactly once as chunks arrive and builds the block map once, at the end
+    of the file.
+  - `alloc_block` rescanned the goal group's bitmap from bit 0 on every
+    allocation. It now starts at the goal's own bit and wraps, so sequential
+    allocation on the streaming path is O(1) per block while freed holes
+    earlier in the group are still found.
+  - metadata blocks went to the device on every touch. `Volume::open_cached`
+    opens through mkfs-ext4 v2.1.0's write-back `CachedDevice`; the CLI uses
+    it, and `CachedDevice`/`CacheStats` are re-exported.
+  `tests/amplification.rs` pins the outcome: a 4 MiB file must unpack in
+  fewer than 500 device operations, read back byte-identical and check clean.
+  Verified against a real kernel on ext2, ext3 and ext4 by
+  `tests/verify-on-linux.sh`.
+
+### Changed
+- **chore(deps):** `mkfs-ext4` v2.0.4 → v2.1.0 (adds `cache::CachedDevice`;
+  also vendors the golden reference images its gitignore had kept out).
+
 ## [v1.4.1] — 2026-08-23
 
 ### Changed

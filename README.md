@@ -10,7 +10,7 @@ Not on crates.io; take it by git, pinned to a tag. `fio-ext4` re-exports
 
 ```toml
 [dependencies]
-fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.3.1" }
+fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.5.0" }
 ```
 
 ```rust
@@ -44,6 +44,21 @@ cannot mount one. It works on a Mac, in an unprivileged container, and against
 storage that is not a block device at all — anything implementing
 `BlockDevice` from [`mkfs-ext4`](https://github.com/glennswest/mkfs.ext4.rs),
 which creates and checks the filesystem this crate fills in.
+
+## Fast on a slow seam
+
+The device is often the far side of a network (NVMe/TCP, a thin volume), where
+what matters is the operation count, not the byte count. `Volume::open_cached`
+opens through mkfs-ext4's write-back `CachedDevice`: metadata blocks settle in
+memory and reach the device once per `flush()`, and streamed file data goes
+down as large coalesced writes. Unpacking a layer writes each data block
+exactly once, and allocation carries on from the last block placed instead of
+rescanning the bitmap. Placing a 55 MB file over NVMe/TCP cost ~14 million
+device operations before these three things (issue #3); a 4 MiB file now
+unpacks in under 500, a bound `tests/amplification.rs` enforces.
+
+The trade is stated plainly: with the cache, nothing is durable until
+`flush()` — which was already this crate's contract for consistency.
 
 ## What it maintains
 

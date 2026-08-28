@@ -4,7 +4,7 @@ Async userspace file I/O into an ext2/ext3/ext4 filesystem. No kernel, no
 mount, no loop device.
 
 - **Crate:** `fio-ext4` (lib `fio_ext4`)
-- **Version:** 1.4.0 — `Cargo.toml` is the single version location
+- **Version:** 1.5.0 — `Cargo.toml` is the single version location
 - **Licence:** MIT OR Apache-2.0
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
   seam, the read layer and `fsck`. The two are developed together; `fio-ext4`
@@ -64,7 +64,7 @@ too, the finding is about the reader.
 - [ ] Triple indirection for very large files on ext2/ext3
 - [ ] Maintain `dir_index` rather than appending linearly
 - [ ] Partial writes at an offset, rather than whole-file replace
-- [ ] Issue #3 — kill the measured 280x–1065x write amplification
+- [x] Issue #3 — kill the measured 280x–1065x write amplification
       (mkfs.ext4.rs#4). Three parts, in this order:
       1. `unpack_file` stops calling `write_at` per 64 KiB chunk. `write_at`
          reads the whole file and rewrites all of it every call, so a 55 MB
