@@ -64,3 +64,16 @@ too, the finding is about the reader.
 - [ ] Triple indirection for very large files on ext2/ext3
 - [ ] Maintain `dir_index` rather than appending linearly
 - [ ] Partial writes at an offset, rather than whole-file replace
+- [ ] Issue #3 — kill the measured 280x–1065x write amplification
+      (mkfs.ext4.rs#4). Three parts, in this order:
+      1. `unpack_file` stops calling `write_at` per 64 KiB chunk. `write_at`
+         reads the whole file and rewrites all of it every call, so a 55 MB
+         file costs ~O(n²) device bytes — the measured superlinearity. The
+         streaming path allocates and writes each data block exactly once and
+         builds the block map once, at the end of the file.
+      2. `alloc_block` scans the goal group from the goal's own bit instead of
+         bit 0, so sequential allocation stops re-walking the bitmap from the
+         start — O(1) per block on the streaming path.
+      3. Adopt mkfs-ext4 v2.1.0's `CachedDevice`: bump the tag, add
+         `Volume::open_cached`, use it in the CLI, re-export the type. Metadata
+         blocks then settle in cache and reach the device once per flush.
