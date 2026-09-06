@@ -4,7 +4,7 @@
 //! The superblock lives at byte 1024. Asked for on its own it is one sector
 //! in on such a device, and refused; the same for a lone inode. Every byte
 //! this crate touches goes through `mkfs_ext4::fs::Filesystem`, which as of
-//! mkfs-ext4 v2.2.1 reads and writes whole blocks only — so the test here is
+//! mkfs-ext4 v2.2.2 reads and writes whole blocks only — so the test here is
 //! that the whole `Volume` surface, cached and uncached, works on a device
 //! that enforces it, and leaves a filesystem that checks clean.
 

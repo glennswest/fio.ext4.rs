@@ -4,7 +4,7 @@ Async userspace file I/O into an ext2/ext3/ext4 filesystem. No kernel, no
 mount, no loop device.
 
 - **Crate:** `fio-ext4` (lib `fio_ext4`)
-- **Version:** 1.6.0 — `Cargo.toml` is the single version location
+- **Version:** 1.6.1 — `Cargo.toml` is the single version location
 - **Licence:** MIT OR Apache-2.0
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
   seam, the read layer and `fsck`. The two are developed together; `fio-ext4`
@@ -67,7 +67,7 @@ too, the finding is about the reader.
 - [x] Issue #4 — the superblock read at byte 1024 refused on a 4096-byte-
       block device (mkfs.ext4.rs#5 is the write side). Every byte this crate
       touches goes through `mkfs_ext4::fs::Filesystem`, so the fix is there:
-      as of mkfs-ext4 v2.2.1 every device operation is a whole filesystem
+      as of mkfs-ext4 v2.2.2 every device operation is a whole filesystem
       block at a block boundary, and `open` reads whole sectors before the
       block size is known. Here: the pin, and `tests/strict_sector.rs`
       opening, writing, unpacking and checking on `MemDevice::strict` —

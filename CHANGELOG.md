@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [v1.6.1] — 2026-09-06
+
+### Changed
+- **chore(deps):** mkfs-ext4 v2.2.2 — the superblock's block is addressed
+  through the device, so a bare superblock (count zero) can be stamped and
+  flushed; stormblock's image builder does exactly that.
+
 ## [v1.6.0] — 2026-09-06
 
 ### Fixed
