@@ -64,6 +64,14 @@ too, the finding is about the reader.
 - [ ] Triple indirection for very large files on ext2/ext3
 - [ ] Maintain `dir_index` rather than appending linearly
 - [ ] Partial writes at an offset, rather than whole-file replace
+- [x] Issue #4 — the superblock read at byte 1024 refused on a 4096-byte-
+      block device (mkfs.ext4.rs#5 is the write side). Every byte this crate
+      touches goes through `mkfs_ext4::fs::Filesystem`, so the fix is there:
+      as of mkfs-ext4 v2.2.0 every device operation is a whole filesystem
+      block at a block boundary, and `open` reads whole sectors before the
+      block size is known. Here: the pin, and `tests/strict_sector.rs`
+      opening, writing, unpacking and checking on `MemDevice::strict` —
+      the device that refuses what a stormblock thin volume refuses.
 - [x] Issue #3 — kill the measured 280x–1065x write amplification
       (mkfs.ext4.rs#4). Three parts, in this order:
       1. `unpack_file` stops calling `write_at` per 64 KiB chunk. `write_at`
