@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [v1.6.0] — 2026-09-06
+
+### Fixed
+- **fix:** the superblock read at byte 1024 was refused on a device enforcing
+  a 4096-byte logical block — a stormblock thin volume — so a node's state
+  volume check failed on any volume with contents (#4). Every byte this crate
+  touches goes through `mkfs_ext4::fs::Filesystem`, and mkfs-ext4 v2.2.1 makes
+  every device operation a whole filesystem block at a block boundary: the
+  superblock is read through the sectors that hold it, inodes through their
+  inode-table block. The `CachedDevice` path inherits it, since what reaches
+  the cache is whole blocks.
+
+### Changed
+- **chore(deps):** mkfs-ext4 v2.2.1 (whole-block I/O; the device's sector is
+  a floor a caller cannot lower).
+
+### Added
+- **test:** `tests/strict_sector.rs` — open, write (cached and uncached) and
+  check a volume on `MemDevice::strict`, the device that refuses what a thin
+  volume refuses.
+
 ## [v1.5.0] — 2026-08-27
 
 ### Fixed
