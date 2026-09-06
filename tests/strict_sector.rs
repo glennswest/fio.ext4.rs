@@ -60,6 +60,7 @@ async fn writes_and_reads_back_uncached_on_4k_sectors() {
     vol.set_time(1_700_000_000);
 
     vol.mkdir_all("/etc/stormblock").await.unwrap();
+    vol.mkdir("/var").await.unwrap();
     vol.write("/etc/stormblock/state.json", b"{\"epoch\":1}\n").await.unwrap();
     let big: Vec<u8> = (0..(3 * MIB) as usize).map(|i| (i % 251) as u8).collect();
     vol.write("/var/big.bin", &big).await.unwrap_or_else(|e| panic!("{e}"));
@@ -101,7 +102,8 @@ async fn writes_and_reads_back_cached_on_4k_sectors() {
     // Everything the cache held has reached the strict device, in whole
     // sectors, or the check below cannot read it.
     let vol = Volume::open(&dev).await.unwrap();
-    assert_eq!(vol.read_dir("/usr/lib").await.unwrap().len(), 65 + 2);
+    // 64 small libraries and the big one; "." and ".." are not listed.
+    assert_eq!(vol.read_dir("/usr/lib").await.unwrap().len(), 65);
     drop(vol);
 
     assert_clean(&dev, "after cached writes on 4 KiB sectors").await;
