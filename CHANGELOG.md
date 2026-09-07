@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [v1.7.0] — 2026-09-06
+
+### Changed
+- **chore(deps):** mkfs-ext4 v3.0.0. Its breaking change is to the `no_std`
+  `BlockReader` trait, which this crate does not use; the pin moves so every
+  consumer resolves one copy of `mkfs-ext4` and one `BlockDevice` trait.
+- **refactor:** clippy clean under `-D warnings`, all targets. Real changes:
+  the bitmap caches did `contains_key` then `insert`, two lookups where the
+  entry API does one; the archive walk was a `loop` with two `match`es
+  standing in for `while let` / `let-else`; a type alias for the
+  deferred-directory tuple; `.max(0)` on a `u64`; the leaf hashes are
+  iterated rather than indexed; `map_err(Error::Fs)`.
+
 ## [v1.6.1] — 2026-09-06
 
 ### Changed
