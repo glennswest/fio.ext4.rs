@@ -957,7 +957,9 @@ impl<D: BlockDevice> Volume<D> {
         // reason. Its extended attributes ride along, since a directory that
         // already existed in a lower layer must end up with this layer's
         // labels and not the ones underneath.
-        let mut deferred: Vec<(String, Attrs, u32, Vec<(String, Vec<u8>)>)> = Vec::new();
+        // Path, attributes, mtime and xattrs of a directory, applied last.
+        type DeferredDir = (String, Attrs, u32, Vec<(String, Vec<u8>)>);
+        let mut deferred: Vec<DeferredDir> = Vec::new();
 
         while let Some(header) = reader.next().await? {
             if header.path.is_empty() {
@@ -1272,18 +1274,13 @@ impl<D: BlockDevice> Volume<D> {
         // produces, and the reason two runs over the same tree agree.
         let mut stack = vec![(root.to_string(), self.sorted_children(root).await?)];
 
-        loop {
-            let next = match stack.last_mut() {
-                Some((dir, rest)) => rest.pop().map(|entry| (dir.clone(), entry)),
-                None => break,
+        while let Some((dir, rest)) = stack.last_mut() {
+            let Some(entry) = rest.pop() else {
+                // This level is done; back up to its parent.
+                stack.pop();
+                continue;
             };
-            let (dir, entry) = match next {
-                Some(found) => found,
-                None => {
-                    stack.pop();
-                    continue;
-                }
-            };
+            let dir = dir.clone();
 
             {
                 let path = join(&dir, &entry.name);
@@ -1551,7 +1548,7 @@ impl<D: BlockDevice> Volume<D> {
     /// Replace a file's contents.
     async fn write_data(&mut self, inum: u32, data: &[u8]) -> Result<()> {
         let block_size = self.fs.block_size() as u64;
-        let needed = (data.len() as u64).div_ceil(block_size).max(0);
+        let needed = (data.len() as u64).div_ceil(block_size);
 
         let mut inode = self.fs.read_inode(inum).await?;
         let mut list = map::read_block_list(&self.fs, &inode).await?;

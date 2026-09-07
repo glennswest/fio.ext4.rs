@@ -54,7 +54,7 @@ pub(crate) fn insert_into_block(
     let mut at = 0usize;
     while at + dirent::ENTRY_HEADER_LEN <= limit {
         let entry = DirEntry::decode(&block[at..limit])
-            .map_err(|e| Error::Fs(e))?;
+            .map_err(Error::Fs)?;
         let rec_len = entry.rec_len as usize;
         if rec_len == 0 {
             break;

@@ -5,6 +5,7 @@
 //! superblock's totals, and the bitmap's checksum. Doing that in one place is
 //! what keeps the filesystem passing `fsck` after a write.
 
+use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 
 use mkfs_ext4::csum;
@@ -51,11 +52,10 @@ impl Allocator {
         fs: &Filesystem<D>,
         group: u32,
     ) -> Result<&mut Vec<u8>> {
-        if !self.cache.block.contains_key(&group) {
-            let bitmap = fs.read_block_bitmap(group).await?;
-            self.cache.block.insert(group, bitmap);
+        match self.cache.block.entry(group) {
+            Entry::Occupied(held) => Ok(held.into_mut()),
+            Entry::Vacant(slot) => Ok(slot.insert(fs.read_block_bitmap(group).await?)),
         }
-        Ok(self.cache.block.get_mut(&group).expect("just inserted"))
     }
 
     /// The inode bitmap for a group, read once and kept.
@@ -64,11 +64,10 @@ impl Allocator {
         fs: &Filesystem<D>,
         group: u32,
     ) -> Result<&mut Vec<u8>> {
-        if !self.cache.inode.contains_key(&group) {
-            let bitmap = fs.read_inode_bitmap(group).await?;
-            self.cache.inode.insert(group, bitmap);
+        match self.cache.inode.entry(group) {
+            Entry::Occupied(held) => Ok(held.into_mut()),
+            Entry::Vacant(slot) => Ok(slot.insert(fs.read_inode_bitmap(group).await?)),
         }
-        Ok(self.cache.inode.get_mut(&group).expect("just inserted"))
     }
 
     /// Allocate one block, preferring the group `goal` is in.

@@ -273,8 +273,9 @@ impl<D: BlockDevice> Volume<D> {
         // The first entry of any index block carries no hash: everything below
         // the second entry's hash belongs to it.
         if plan.levels == 0 {
-            for i in 0..leaves.len() {
-                let hash = if i == 0 { 0 } else { hashes[i] };
+            debug_assert_eq!(hashes.len(), leaves.len(), "one lowest hash per leaf");
+            for (i, &hash) in hashes.iter().enumerate().take(leaves.len()) {
+                let hash = if i == 0 { 0 } else { hash };
                 htree::set_entry(&mut blocks[0], htree::ROOT_COUNT_OFFSET, i, hash, 1 + i as u32);
             }
             htree::set_count(&mut blocks[0], htree::ROOT_COUNT_OFFSET, leaves.len() as u16);
