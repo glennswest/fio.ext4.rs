@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### 2026-09-27
+- **docs:** fourth pass against the code: nothing but docs since 2026-09-18,
+  and the README's attribute examples (`symlink` argument order, `mknod`,
+  `chown`, `tar::Io`) check out against the signatures. No doc changes
+  needed; no new doc-vs-code gaps (#5 remains the open one).
 - **docs:** third pass against the code (still nothing but docs since
   2026-09-18). The README's first example imported `mkfs_ext4::device`,
   which does not resolve for a consumer who follows the README and takes
