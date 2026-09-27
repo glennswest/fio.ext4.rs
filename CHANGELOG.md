@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### 2026-09-27
+- **docs:** third pass against the code (still nothing but docs since
+  2026-09-18). The README's first example imported `mkfs_ext4::device`,
+  which does not resolve for a consumer who follows the README and takes
+  only `fio-ext4`; it now goes through the `fio_ext4::mkfs_ext4` re-export.
+  Added the crate-root re-exports (`CachedDevice`, `CacheStats`, `Xattr`,
+  `UnpackReport`, `PackReport`) and `archive::unpack_into` / `pack_from` /
+  `source` / `sink`. No new doc-vs-code gaps; #5 remains the open one.
 - **docs:** second pass against the code (nothing but docs has changed since
   2026-09-18). The README's `Volume` API list now names every public method
   (`lookup`, `exists`, `stat`, `read_dir`, `unlink`, `mknod`/`device_numbers`,

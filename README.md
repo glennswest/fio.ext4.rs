@@ -15,7 +15,7 @@ fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.7.0" }
 
 ```rust
 use fio_ext4::Volume;
-use mkfs_ext4::device::FileDevice;
+use fio_ext4::mkfs_ext4::device::FileDevice;  // the re-export; no second dependency
 
 let device = FileDevice::open("disk.img").await?;
 let mut vol = Volume::open(device).await?;
@@ -151,6 +151,10 @@ That obeys the whiteout markers, so a layer can delete as well as add:
 everything already in its directory. A file that replaces one from a lower
 layer gets a fresh inode, so it inherits none of the old mode, owner or labels.
 
+`archive::unpack_into` / `archive::pack_from` do the same against a `Volume`
+you already hold, and `archive::source` / `archive::sink` open a path or
+standard input/output as the stream.
+
 For a byte-level interface — `Reader`, `Writer`, and a `Source`/`Sink` pair
 that needs no runtime, no pinning and no allocation to implement — see the
 [`tar`](src/tar.rs) module.
@@ -186,7 +190,10 @@ memory or a stream (`unpack_tar`, `unpack_tar_from`, `unpack_tar_into`,
 `unpack_tar_layer`, `pack_tar`, `pack_tar_to`); `filesystem()` for the
 `mkfs_ext4::fs::Filesystem` underneath; and `set_time`, which fixes the
 timestamp stamped on new and changed files so an image build is reproducible
-(the role `SOURCE_DATE_EPOCH` plays for `mke2fs`). Minimum Rust is 1.75.
+(the role `SOURCE_DATE_EPOCH` plays for `mke2fs`). The crate root also
+re-exports `CachedDevice` and `CacheStats` (mkfs-ext4's write-back cache),
+`Xattr`, and the `UnpackReport` / `PackReport` counts the tar calls return.
+Minimum Rust is 1.75.
 
 ## Licence
 
