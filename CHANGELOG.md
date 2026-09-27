@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### 2026-09-27
+- **docs:** brought the README and CLAUDE.md in line with the code. The
+  README now pins `v1.7.0` (it said `v1.5.0`) and has the full CLI command
+  table, the `cli`/`gzip` features, the `PackOptions` import its example was
+  missing, and the rest of the `Volume` API. It also says the kernel check is
+  manual. In CLAUDE.md: the mkfs-ext4 dependency is by git tag with a dev
+  `[patch]` (it said by path), the shape table has `index`, `tar`, `archive`
+  and the CLI, the work plan ticks the features that shipped in v1.0–v1.3,
+  and there is a "ships as" line. Filed #5: `verify-on-linux.sh` needs
+  `root@dev.g8.lo` and a local build, so sessions cannot run it.
+
 ## [v1.7.0] — 2026-09-06
 
 ### Changed

@@ -7,17 +7,26 @@ mount, no loop device.
 - **Version:** 1.7.0 — `Cargo.toml` is the single version location
 - **Licence:** MIT OR Apache-2.0
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
-  seam, the read layer and `fsck`. The two are developed together; `fio-ext4`
-  depends on it by path.
+  seam, the read layer, `fsck` and the write-back `CachedDevice`. `fio-ext4`
+  depends on it by git, pinned to a tag (currently `v3.0.0`, see
+  `Cargo.toml`), with a `[patch]` to `../mkfs.ext4.rs` so local development
+  picks up the sibling checkout. Downstream consumers never see the patch.
+- **Ships as:** a library, taken by git at a tag, plus the `fio-ext4` binary
+  (default `cli` feature; `gzip` is also default). It is not published to
+  crates.io, and it has no service, ports, config file or container image.
 
 ## Shape
 
 | Module | What it owns |
 |---|---|
 | `alloc` | block and inode allocation, and the four counters every allocation moves |
-| `map` | an inode's block map — extent trees and indirect blocks alike |
+| `map` | an inode's block map — extent trees and indirect blocks (up to triple) alike |
 | `dir` | directory entry insertion and removal within a block |
-| `volume` | the public API: read, write, mkdir, unlink, stat, list |
+| `index` | hash-indexed (`dir_index`) directories: conversion, lookup, rebuild |
+| `volume` | the public API: read, write, write_at, mkdir, link, rename, symlink, xattrs, tar unpack/pack, stat, list |
+| `tar` | streaming tar `Reader`/`Writer` over a runtime-free `Source`/`Sink` |
+| `archive` | path-level unpack/pack, gzip detection, stdin/stdout |
+| `bin/fio_ext4` | the CLI: `ls cat put get mkdir rm rmdir stat untar tar` |
 
 ## Rules
 
@@ -28,7 +37,10 @@ mount, no loop device.
 3. **Every test ends by checking the filesystem.** A file writer that leaves
    `fsck` complaining has damaged the filesystem, not written a file.
 4. **The kernel is the judge.** `tests/verify-on-linux.sh` is the test that
-   counts: contents compared byte for byte after a real mount.
+   counts: contents compared byte for byte after a real mount. It needs root
+   on a Linux host and a local build, so sessions cannot run it; moving it
+   into a `test/` container is issue #5. `sc-build` runs `cargo test`, which
+   checks every image with `mkfs-ext4`'s `fsck`.
 
 ## What lwext4 does not do
 
@@ -59,11 +71,13 @@ too, the finding is about the reader.
 - [x] Allocator, block maps, directory entries, the `Volume` API
 - [x] `fio-ext4` binary
 - [x] Round-trip tests and the Linux verification harness
-- [ ] Hard links, symlinks, rename
-- [ ] Extended attributes
-- [ ] Triple indirection for very large files on ext2/ext3
-- [ ] Maintain `dir_index` rather than appending linearly
-- [ ] Partial writes at an offset, rather than whole-file replace
+- [x] Hard links, symlinks, rename
+- [x] Extended attributes
+- [x] Triple indirection for very large files on ext2/ext3
+- [x] Maintain `dir_index` rather than appending linearly
+- [x] Partial writes at an offset, rather than whole-file replace
+- [x] Tar unpack/pack, OCI whiteouts, gzip
+- [ ] Issue #5: move the kernel verification into a `test/` container
 - [x] Issue #4 — the superblock read at byte 1024 refused on a 4096-byte-
       block device (mkfs.ext4.rs#5 is the write side). Every byte this crate
       touches goes through `mkfs_ext4::fs::Filesystem`, so the fix is there:

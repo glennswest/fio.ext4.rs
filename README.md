@@ -10,7 +10,7 @@ Not on crates.io; take it by git, pinned to a tag. `fio-ext4` re-exports
 
 ```toml
 [dependencies]
-fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.5.0" }
+fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.7.0" }
 ```
 
 ```rust
@@ -36,6 +36,23 @@ fio-ext4 disk.img cat /etc/hostname
 fio-ext4 disk.img untar rootfs.tar
 fio-ext4 disk.img tar -z backup.tar.gz
 ```
+
+| Command | What it does |
+|---|---|
+| `ls [-l] [PATH]` | list a directory (default `/`); `-l` adds inode and size |
+| `cat PATH` | print a file to stdout |
+| `put SOURCE DEST` | copy a host file in, creating the parent directories |
+| `get SOURCE DEST` | copy a file out to the host |
+| `mkdir PATH` | create a directory and its parents |
+| `rm PATH` / `rmdir PATH` | remove a file / an empty directory |
+| `stat PATH` | inode, size, mode, links, owner, blocks, type |
+| `untar [ARCHIVE] [-C DIR] [--whiteouts]` | unpack a tar (stdin if omitted or `-`; gzip detected) into `DIR` (default `/`); `--whiteouts` obeys OCI `.wh.` markers |
+| `tar [ARCHIVE] [-C DIR] [-z]` | pack `DIR` (default `/`) to a tar (stdout if omitted or `-`); `-z` gzips it |
+
+The binary opens the image through the write-back cache (`Volume::open_cached`)
+and flushes before every mutating command exits. It is built by the default
+`cli` feature; the default `gzip` feature brings in gzip support. A library
+consumer that needs neither can use `default-features = false`.
 
 ## Why
 
@@ -77,7 +94,11 @@ blocks — then hands the image to a real Linux kernel and checks that
 - file contents match **byte for byte** by SHA-256,
 - the kernel can write to it afterwards, and it is *still* clean.
 
-All three of ext2, ext3 and ext4 pass.
+All three of ext2, ext3 and ext4 passed when the script was last run.
+It is a manual check: it needs root on a Linux host (`root@dev.g8.lo` by
+default) and builds locally, so it does not run in `sc-build`. Moving it
+into a `test/` container is issue #5. `cargo test`, which does run in
+`sc-build`, rebuilds and re-reads every image with `mkfs-ext4`'s `fsck`.
 
 ## Attributes
 
@@ -102,7 +123,7 @@ symlinks, hard links, device nodes, timestamps, and extended attributes
 including SELinux labels.
 
 ```rust
-use fio_ext4::archive::{self, UnpackOptions};
+use fio_ext4::archive::{self, PackOptions, UnpackOptions};
 
 // An image and an archive, by path.
 archive::unpack("disk.img", Some("rootfs.tar"), &UnpackOptions::default()).await?;
@@ -153,6 +174,13 @@ index* rather than by listing, a name that was never there still absent, the
 kernel able to add its own name to our tree, and `e2fsck` clean again
 afterwards. `debugfs -R htree_dump` reads the tree back with the counts,
 limits and checksums it expects.
+
+## Other API
+
+Also on `Volume`: `append` and `write_at` (writes at an offset), `link`
+(hard links), `rename`, `symlink` / `read_link`, `chmod` / `chown` /
+`set_times`, `remove_all`, and extended attributes through `get_xattr`,
+`list_xattrs`, `set_xattr`, `remove_xattr` and `write_xattrs`.
 
 ## Licence
 
