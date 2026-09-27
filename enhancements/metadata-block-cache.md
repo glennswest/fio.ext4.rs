@@ -2,6 +2,12 @@
 
 **Filed:** 2026-08-28, from sbregistry's per-layer device stats on rose1.
 
+**Status:** resolved in v1.5.0 (issue #3). The streamed unpack now writes each data
+block once, allocation resumes from the goal bit, and `Volume::open_cached`
+opens through mkfs-ext4's write-back `CachedDevice`. `tests/amplification.rs`
+holds a 4 MiB unpack under 500 device operations. Kept as the record of the
+measurement.
+
 ## Measurement
 
 Unpacking one tar layer of 9,730,568 bytes (a single 9.7 MB file) into an

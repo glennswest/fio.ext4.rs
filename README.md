@@ -177,10 +177,16 @@ limits and checksums it expects.
 
 ## Other API
 
-Also on `Volume`: `append` and `write_at` (writes at an offset), `link`
-(hard links), `rename`, `symlink` / `read_link`, `chmod` / `chown` /
-`set_times`, `remove_all`, and extended attributes through `get_xattr`,
-`list_xattrs`, `set_xattr`, `remove_xattr` and `write_xattrs`.
+Also on `Volume`: `lookup`, `exists`, `stat` and `read_dir`; `append` and
+`write_at` (writes at an offset); `unlink`, `rmdir` and `remove_all`; `link`
+(hard links), `rename`, `symlink` / `read_link`, `mknod` / `device_numbers`;
+`chmod` / `chown` / `set_times`; extended attributes through `get_xattr`,
+`list_xattrs`, `set_xattr`, `remove_xattr` and `write_xattrs`; tar from and to
+memory or a stream (`unpack_tar`, `unpack_tar_from`, `unpack_tar_into`,
+`unpack_tar_layer`, `pack_tar`, `pack_tar_to`); `filesystem()` for the
+`mkfs_ext4::fs::Filesystem` underneath; and `set_time`, which fixes the
+timestamp stamped on new and changed files so an image build is reproducible
+(the role `SOURCE_DATE_EPOCH` plays for `mke2fs`). Minimum Rust is 1.75.
 
 ## Licence
 

@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### 2026-09-27
+- **docs:** second pass against the code (nothing but docs has changed since
+  2026-09-18). The README's `Volume` API list now names every public method
+  (`lookup`, `exists`, `stat`, `read_dir`, `unlink`, `mknod`/`device_numbers`,
+  the `unpack_tar*`/`pack_tar*` family, `filesystem`, `set_time`) and the
+  1.75 minimum Rust. `enhancements/metadata-block-cache.md` is marked resolved
+  in v1.5.0 (#3). No new doc-vs-code gaps; #5 remains the open one.
 - **docs:** brought the README and CLAUDE.md in line with the code. The
   README now pins `v1.7.0` (it said `v1.5.0`) and has the full CLI command
   table, the `cli`/`gzip` features, the `PackOptions` import its example was
