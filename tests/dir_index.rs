@@ -5,7 +5,8 @@
 //! checksums and every name in a leaf — it is simply the wrong leaf, and the
 //! only symptom is that lookups miss. So these tests check three separate
 //! things: that we find our own names, that `e2fsck` accepts the tree, and
-//! (in `verify-on-linux.sh`) that a kernel walking the index finds them too.
+//! (checked by hand against a real kernel) that a kernel walking the index
+//! finds them too.
 
 use fio_ext4::Volume;
 use mkfs_ext4::device::MemDevice;

@@ -85,20 +85,33 @@ totals, and every metadata checksum.
 
 ## Verified
 
-`tests/verify-on-linux.sh` builds a filesystem entirely in userspace — format,
-directories, files, a 120-entry directory, a 900 KB file needing indirect
-blocks — then hands the image to a real Linux kernel and checks that
+The test image `fio-ext4-test` (`test/`, per the stormcos test standard)
+builds filesystems entirely in userspace — `mkfs-ext4` formats, `fio-ext4`
+fills, with no mount, loop device or kernel — then judges them the two ways
+that count:
 
-- `e2fsck -fn` is clean,
-- the kernel mounts it and the tree is exactly what was written,
-- file contents match **byte for byte** by SHA-256,
-- the kernel can write to it afterwards, and it is *still* clean.
+- the real `e2fsck -fn` is clean,
+- a real kernel loop-mounts the image and the tree is exactly what was
+  written, file contents matching **byte for byte** by SHA-256,
+- the kernel can write to it afterwards (a file and a directory), and
+  `e2fsck -fn` is *still* clean.
 
-All three of ext2, ext3 and ext4 passed when the script was last run.
-It is a manual check: it needs root on a Linux host (`root@dev.g8.lo` by
-default) and builds locally, so it does not run in `sc-build`. Moving it
-into a `test/` container is issue #5. `cargo test`, which does run in
-`sc-build`, rebuilds and re-reads every image with `mkfs-ext4`'s `fsck`.
+| suite | what it builds |
+|---|---|
+| `short` | ext4: files, a 900 KB file, a 120-entry directory |
+| `medium` | that on ext4, ext3 and ext2, plus a gzipped tar layer (symlink, hard link, modes) unpacked on ext4 |
+| `long` | `medium`, plus a 200 MiB file on each of ext4, ext3 and ext2 |
+
+stormcentral runs it as a Job on every test machine:
+`stormcentral test run fio.ext4.rs short|medium|long`. The kernel half needs
+a loop device and a mount, so the suites declare a privileged pod
+(`test/requires.toml`); on a node that cannot give one they report those
+checks as *skip*, never pass. `test/build.sh` builds static `fio-ext4` and
+`mkfs-ext4` — the very version `Cargo.lock` pins — and `test/test.sh` is the
+`/test` program, printing one JSON line per check.
+
+`cargo test`, which runs in `sc-build`, rebuilds and re-reads every image
+with `mkfs-ext4`'s `fsck`.
 
 ## Attributes
 
