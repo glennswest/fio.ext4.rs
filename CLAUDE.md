@@ -83,6 +83,11 @@ too, the finding is about the reader.
       has no sibling on the build box. The patch moved to a gitignored
       `.cargo/config.toml`; `Cargo.lock` resolves mkfs-ext4 from the v3.0.0 tag.
 - [ ] Issue #5: move the kernel verification into a `test/` container
+- [ ] Issue #7 — the five fsck assertions use `check_only()` without force;
+      at mkfs-ext4 4.0.0 a clean filesystem is skipped and they check nothing.
+      Fix: `FsckOptions { force: true, ..check_only() }` (the field exists in
+      v3.0.0), plus `report.directories > 0`, which only the passes set, so a
+      skipped check fails the test on any version.
 - [x] Issue #4 — the superblock read at byte 1024 refused on a 4096-byte-
       block device (mkfs.ext4.rs#5 is the write side). Every byte this crate
       touches goes through `mkfs_ext4::fs::Filesystem`, so the fix is there:
