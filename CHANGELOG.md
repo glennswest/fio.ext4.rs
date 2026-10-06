@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### 2026-10-06
+- **fix:** `sc-build` could not build the crate at all (#6, #8): the
+  `[patch]` in `Cargo.toml` pointed mkfs-ext4 at `../mkfs.ext4.rs`, which
+  does not exist in a build job. The patch is gone from `Cargo.toml`;
+  `Cargo.lock` now resolves mkfs-ext4 from the `v3.0.0` git tag, and local
+  development against the sibling uses a gitignored `.cargo/config.toml`
+  (snippet in `Cargo.toml`, documented in CLAUDE.md).
+
 ### 2026-09-27
 - **docs:** fourth pass against the code: nothing but docs since 2026-09-18,
   and the README's attribute examples (`symlink` argument order, `mknod`,

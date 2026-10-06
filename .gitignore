@@ -14,6 +14,9 @@ secrets/
 # Build artifacts
 target/
 
+# Local-only cargo config (a dev [patch] to ../mkfs.ext4.rs, #6)
+.cargo/config.toml
+
 # Logs, temp and test images
 *.log
 tmp/

@@ -9,8 +9,10 @@ mount, no loop device.
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
   seam, the read layer, `fsck` and the write-back `CachedDevice`. `fio-ext4`
   depends on it by git, pinned to a tag (currently `v3.0.0`, see
-  `Cargo.toml`), with a `[patch]` to `../mkfs.ext4.rs` so local development
-  picks up the sibling checkout. Downstream consumers never see the patch.
+  `Cargo.toml`). There is no `[patch]` in `Cargo.toml`: the build box has no
+  sibling checkout, so one breaks `sc-build` (#6, #8). To develop against the
+  sibling, put the patch in the gitignored `.cargo/config.toml` (the snippet
+  is in `Cargo.toml`), and bump the tag before pushing.
 - **Ships as:** a library, taken by git at a tag, plus the `fio-ext4` binary
   (default `cli` feature; `gzip` is also default). It is not published to
   crates.io, and it has no service, ports, config file or container image.
@@ -77,6 +79,9 @@ too, the finding is about the reader.
 - [x] Maintain `dir_index` rather than appending linearly
 - [x] Partial writes at an offset, rather than whole-file replace
 - [x] Tar unpack/pack, OCI whiteouts, gzip
+- [x] Issues #6/#8 — `sc-build` failed: the `[patch]` to `../mkfs.ext4.rs`
+      has no sibling on the build box. The patch moved to a gitignored
+      `.cargo/config.toml`; `Cargo.lock` resolves mkfs-ext4 from the v3.0.0 tag.
 - [ ] Issue #5: move the kernel verification into a `test/` container
 - [x] Issue #4 — the superblock read at byte 1024 refused on a 4096-byte-
       block device (mkfs.ext4.rs#5 is the write side). Every byte this crate
