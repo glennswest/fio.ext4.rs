@@ -83,6 +83,17 @@ too, the finding is about the reader.
       has no sibling on the build box. The patch moved to a gitignored
       `.cargo/config.toml`; `Cargo.lock` resolves mkfs-ext4 from the v3.0.0 tag.
 - [ ] Issue #5: move the kernel verification into a `test/` container
+      (`stormcentral test run fio.ext4.rs <suite>`, image
+      `test-fio-ext4-rs-<suite>`). `test/build.sh` builds static musl
+      `fio-ext4` and the pinned `mkfs-ext4` (`-p mkfs-ext4 --features
+      mkfs-ext4/cli`, so it is the version `Cargo.lock` pins);
+      `test/Containerfile` is fedora-minimal + e2fsprogs + util-linux;
+      `/test` (`test/test.sh`) formats, fills, `e2fsck -fn`, loop-mounts,
+      compares sha256, lets the kernel write, `e2fsck -fn` again; JSON lines
+      out. `requires.toml`: privileged. No loop device or no ext4 in the
+      kernel: skip, never pass. short = ext4; medium = ext4/ext3/ext2 + a tar
+      unpack (symlink, hard link); long = medium + a 200 MiB file.
+      `tests/verify-on-linux.sh` goes; README/CLAUDE rule 4 point here.
 - [x] Issue #7 — the five fsck assertions use `check_only()` without force;
       at mkfs-ext4 4.0.0 a clean filesystem is skipped and they check nothing.
       Fix: `FsckOptions { force: true, ..check_only() }` (the field exists in
