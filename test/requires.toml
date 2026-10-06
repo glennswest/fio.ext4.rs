@@ -1,0 +1,15 @@
+# What fio-ext4-test needs beyond the runner's namespace-only Role
+# (stormcentral docs/test-standard.md). Formatting and filling the image need
+# nothing; the judging does: a loop device and a mount, so the pod is
+# privileged. On a node whose kernel has no loop driver or no ext4, the kernel
+# checks report skip, never pass. No hardware is assumed: images are sparse
+# files in the pod's own temp directory (short 64 MiB, medium 3 x 64 MiB,
+# long adds three of 256 MiB, one at a time).
+[short]
+privileged = true
+
+[medium]
+privileged = true
+
+[long]
+privileged = true

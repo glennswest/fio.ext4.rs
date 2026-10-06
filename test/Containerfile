@@ -1,0 +1,15 @@
+# fio-ext4-test — fio-ext4's test image, per stormcentral
+# docs/test-standard.md. One image for all three suites: the Job runs
+# `/test short|medium|long`.
+#
+# The question it answers is CLAUDE.md rule 4's: does a real kernel see what
+# fio-ext4 wrote? test/build.sh stages static fio-ext4 and mkfs-ext4; this adds
+# what the judging needs — e2fsck, losetup and mount, and tar and gzip to
+# make a layer — which is why it is fedora-minimal and not scratch.
+FROM registry.fedoraproject.org/fedora-minimal:43
+ARG COMMIT=unknown
+LABEL storm.io/test-of="fio.ext4.rs" storm.io/test-commit="${COMMIT}"
+RUN microdnf -y install --setopt=install_weak_deps=0 e2fsprogs util-linux tar gzip coreutils && microdnf clean all
+COPY test/.stage/fio-ext4 test/.stage/mkfs-ext4 /usr/local/bin/
+COPY test/.stage/test /test
+ENTRYPOINT ["/test"]

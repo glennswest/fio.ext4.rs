@@ -22,3 +22,6 @@ target/
 tmp/
 *.img
 *.img.*
+
+# Test-image staging (test/build.sh)
+test/.stage/
