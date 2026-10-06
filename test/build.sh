@@ -7,8 +7,9 @@
 # the build box, and stages static binaries in test/.stage/;
 # test/Containerfile (context: the repo root) packages them.
 #
-# mkfs-ext4 is built from this crate's own dependency graph, so it is exactly
-# the version Cargo.lock pins — the formatter fio-ext4 is tested against.
+# mkfs-ext4 is installed from the exact commit Cargo.lock pins — the
+# formatter fio-ext4 is tested against. (Cargo will not turn on a
+# dependency's `cli` feature from here, so it is not built in this workspace.)
 # With STAGE_ONLY=1 it stops after staging and prints the stage path;
 # otherwise it also runs `podman build` and tags fio-ext4-test.
 set -eu
@@ -18,14 +19,19 @@ commit=$(git -C "$root" rev-parse HEAD)
 manifest="$root/Cargo.toml"
 
 cargo build --release --locked --target "$target" --manifest-path "$manifest" --bin fio-ext4
-cargo build --release --locked --target "$target" --manifest-path "$manifest" \
-    -p mkfs-ext4 --features mkfs-ext4/cli --bin mkfs-ext4
+locked=$(sed -n '/^name = "mkfs-ext4"$/,/^$/s/^source = "git+\(.*\)"$/\1/p' "$root/Cargo.lock")
+mkfs_repo=${locked%%\?*}
+mkfs_rev=${locked##*#}
+[ -n "$mkfs_repo" ] && [ -n "$mkfs_rev" ] || { echo "mkfs-ext4's source not found in Cargo.lock" >&2; exit 1; }
+tools="$root/test/.tools"
+cargo install --locked --target "$target" --root "$tools" \
+    --git "$mkfs_repo" --rev "$mkfs_rev" --bin mkfs-ext4 mkfs-ext4
 tdir=$(cargo metadata --format-version 1 --no-deps --manifest-path "$manifest" |
     sed 's/.*"target_directory":"\([^"]*\)".*/\1/')
 stage="$root/test/.stage"
 rm -rf "$stage"
 mkdir -p "$stage"
-cp "$tdir/$target/release/fio-ext4" "$tdir/$target/release/mkfs-ext4" "$stage/"
+cp "$tdir/$target/release/fio-ext4" "$tools/bin/mkfs-ext4" "$stage/"
 cp "$root/test/test.sh" "$stage/test"
 chmod 755 "$stage/test"
 

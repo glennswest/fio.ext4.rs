@@ -25,3 +25,6 @@ tmp/
 
 # Test-image staging (test/build.sh)
 test/.stage/
+
+# Test-image tools (test/build.sh)
+test/.tools/
