@@ -124,9 +124,15 @@ async fn a_large_file_costs_its_size_not_its_square() {
     assert!(back == payload, "contents differ after streamed unpack");
     drop(vol);
 
-    let report = fsck::check(&dev.inner, &FsckOptions::check_only())
-        .await
-        .unwrap();
+    // `e2fsck -fn`: check even though the superblock says clean, as
+    // mkfs-ext4 4.0.0 skips a clean filesystem without `force` (#7).
+    let forced = FsckOptions {
+        force: true,
+        ..FsckOptions::check_only()
+    };
+    let report = fsck::check(&dev.inner, &forced).await.unwrap();
+    // Only the passes count directories, so a skipped check reports none.
+    assert!(report.directories > 0, "fsck skipped the filesystem");
     assert!(
         report.is_clean(),
         "filesystem not clean after streamed unpack:\n{}",

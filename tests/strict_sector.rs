@@ -28,7 +28,15 @@ async fn strict_4k(size: u64) -> MemDevice {
 }
 
 async fn assert_clean(dev: &MemDevice, what: &str) {
-    let report = fsck::check(dev, &FsckOptions::check_only()).await.unwrap();
+    // `e2fsck -fn`: check even though the superblock says clean, as
+    // mkfs-ext4 4.0.0 skips a clean filesystem without `force` (#7).
+    let forced = FsckOptions {
+        force: true,
+        ..FsckOptions::check_only()
+    };
+    let report = fsck::check(dev, &forced).await.unwrap();
+    // Only the passes count directories, so a skipped check reports none.
+    assert!(report.directories > 0, "fsck skipped the filesystem");
     assert!(
         report.is_clean(),
         "{what}: filesystem is not clean:\n{}",

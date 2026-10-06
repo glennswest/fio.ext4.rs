@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 2026-10-06
+- **test:** Every fsck assertion forces the check (`force: true`, `e2fsck -fn`)
+  and asserts the passes ran (`report.directories > 0`). From mkfs-ext4 4.0.0
+  `check_only()` skips a clean filesystem, and fio-ext4 never marks one
+  dirty, so the five assertions would have passed without checking (#7).
+
 ## [v1.7.1] — 2026-10-06
 
 ### Fixed
