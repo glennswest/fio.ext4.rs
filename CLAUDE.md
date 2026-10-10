@@ -38,13 +38,14 @@ mount, no loop device.
    half-updated tree if a write fails partway.
 3. **Every test ends by checking the filesystem.** A file writer that leaves
    `fsck` complaining has damaged the filesystem, not written a file.
-4. **The kernel is the judge.** The `fio-ext4-test` container (`test/`) is
-   the test that counts: images written in userspace, then `e2fsck -fn` and
-   a real kernel's loop mount, contents compared byte for byte. stormcentral
-   runs it on the test machines (`stormcentral test run fio.ext4.rs
-   short|medium|long`); it needs a privileged pod, and reports the kernel
-   checks as skip where it gets none. `sc-build` runs `cargo test`, which
-   checks every image with `mkfs-ext4`'s `fsck`.
+4. **The kernel is the judge.** The testhost boot VM (`tests/vm/`) is the
+   test that counts: images written in userspace, then `e2fsck -fn` and a
+   real kernel's loop mount, contents compared byte for byte, the kernel
+   writing and fio-ext4 writing over it, `e2fsck -fn` after each. Build the
+   image with sc-build (`SC_BUILD_OUT`), boot it with `stormcentral testhost
+   boot nanatest1` (README "Verified"). The `fio-ext4-test` container
+   (`test/`) is unprivileged: e2fsck only, kernel checks skip. `sc-build`
+   runs `cargo test`, which checks every image with `mkfs-ext4`'s `fsck`.
 
 ## What lwext4 does not do
 

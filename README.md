@@ -85,30 +85,44 @@ totals, and every metadata checksum.
 
 ## Verified
 
-The test image `fio-ext4-test` (`test/`, per the stormcos test standard)
-builds filesystems entirely in userspace — `mkfs-ext4` formats, `fio-ext4`
-fills, with no mount, loop device or kernel — then judges them the two ways
-that count:
+The kernel is the judge, and it judges in a throwaway VM (`tests/vm/`):
+stormcentral boots a disk image on a test machine, the image's init runs the
+checks as PID 1 under a real kernel, prints `VERIFY PASS` or `VERIFY FAIL
+<why>` on serial, and stormcentral destroys the VM. No root anywhere, and no
+privileged pod. Each case — files on ext4, ext3 and ext2; a gzipped tar
+layer (symlink, hard link, modes) on ext4; a 200 MiB file on each of ext4,
+ext3 and ext2 — is built entirely in userspace (`mkfs-ext4` formats,
+`fio-ext4` fills), then:
 
 - the real `e2fsck -fn` is clean,
-- a real kernel loop-mounts the image and the tree is exactly what was
-  written, file contents matching **byte for byte** by SHA-256,
-- the kernel can write to it afterwards (a file and a directory), and
-  `e2fsck -fn` is *still* clean.
+- the kernel loop-mounts it and the tree is exactly what was written, file
+  contents matching **byte for byte** by SHA-256, modes, symlinks and hard
+  links included,
+- the kernel writes to it (a file, a directory, 200 names) and `e2fsck -fn`
+  is *still* clean,
+- `fio-ext4` reads the kernel's files and writes over its directory, and
+  `e2fsck -fn` is clean again and the kernel reads that back.
+
+```sh
+SC_BUILD_OUT=tmp/fio-ext4-verify.img SC_BUILD_OUT_TO=tmp/fio-ext4-verify.img \
+  sc-build 'tests/vm/build-image.sh tmp/fio-ext4-verify.img'
+stormcentral testhost boot nanatest1 --image tmp/fio-ext4-verify.img \
+  --expect 'VERIFY PASS' --fail 'VERIFY FAIL' --timeout 900 --memory 2048
+```
+
+The image carries the build VM's own kernel, busybox, `e2fsck`, this
+checkout's `fio-ext4` and the `mkfs-ext4` that `Cargo.lock` pins.
+
+The test container `fio-ext4-test` (`test/`, per the stormcos test standard,
+`stormcentral test run fio.ext4.rs short|medium|long`) runs the same
+userspace builds and `e2fsck -fn` in an unprivileged pod; its kernel checks
+report *skip* there, never pass.
 
 | suite | what it builds |
 |---|---|
 | `short` | ext4: files, a 900 KB file, a 120-entry directory |
 | `medium` | that on ext4, ext3 and ext2, plus a gzipped tar layer (symlink, hard link, modes) unpacked on ext4 |
 | `long` | `medium`, plus a 200 MiB file on each of ext4, ext3 and ext2 |
-
-stormcentral runs it as a Job on every test machine:
-`stormcentral test run fio.ext4.rs short|medium|long`. The kernel half needs
-a loop device and a mount, so the suites declare a privileged pod
-(`test/requires.toml`); on a node that cannot give one they report those
-checks as *skip*, never pass. `test/build.sh` builds static `fio-ext4` and
-`mkfs-ext4` — the very version `Cargo.lock` pins — and `test/test.sh` is the
-`/test` program, printing one JSON line per check.
 
 `cargo test`, which runs in `sc-build`, rebuilds and re-reads every image
 with `mkfs-ext4`'s `fsck`.

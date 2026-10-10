@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### 2026-10-10
+- **test:** The kernel verification runs in a throwaway VM booted by
+  `stormcentral testhost boot` (#5, owner: not root, not a privileged pod).
+  `tests/vm/build-image.sh` (run through sc-build) makes a UEFI disk with the
+  build VM's kernel, busybox, `e2fsck`, `fio-ext4` and the pinned
+  `mkfs-ext4`; `tests/vm/init.sh` writes ext4/ext3/ext2 images in userspace,
+  then `e2fsck -fn`, kernel loop-mount and byte-for-byte compare, a kernel
+  write, `e2fsck -fn`, fio-ext4 writing over the kernel's work, `e2fsck -fn`
+  and the kernel reading it back; `VERIFY PASS` / `VERIFY FAIL` on serial.
+- **test:** `fio-ext4-test` (`test/requires.toml`) no longer asks for a
+  privileged pod; its kernel checks report skip.
+
 ## [v1.8.0] — 2026-10-10
 
 ### Changed
