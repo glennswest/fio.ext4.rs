@@ -2,31 +2,33 @@
 
 ## [Unreleased]
 
-### 2026-10-10
-- **feat:** mkfs-ext4 is pinned to `v4.1.0` (was `v3.0.0`, #10). Re-exported
-  mkfs-ext4 types (`CachedDevice`, `BlockDevice`, …) are now v4.1.0's, so a
-  consumer that also takes mkfs-ext4 directly must move to the same tag.
-  v4.1.0's `fsck::check` replays a dirty journal and releases orphans before
-  repairing, as e2fsck does.
-- **test:** The five fsck assertions use `FsckOptions::check_only().force(true)`
-  and assert `report.scope == CheckScope::Forced`, which v4 makes available;
-  `report.directories > 0` stays as a check that the passes read the tree.
+## [v1.8.0] — 2026-10-10
 
-### 2026-10-06
-- **test:** The kernel verification is a test container, `fio-ext4-test`
-  (`test/`, per the stormcos test standard), run by stormcentral on every test
-  machine with `stormcentral test run fio.ext4.rs short|medium|long` (#5).
-  It formats with the pinned `mkfs-ext4`, fills with `fio-ext4`, then judges
-  with `e2fsck -fn` and a real kernel's loop mount: contents byte for byte, a
-  kernel write, `e2fsck -fn` again. `medium` adds ext3, ext2 and a tar layer;
-  `long` a 200 MiB file per profile. Privileged pod; no loop device or no
-  ext4 driver reports skip, never pass. `tests/verify-on-linux.sh`, which
-  needed `root@dev.g8.lo` and a local build, is gone.
-- **docs:** README *Verified* and CLAUDE.md rule 4 describe the container.
-- **test:** Every fsck assertion forces the check (`force: true`, `e2fsck -fn`)
-  and asserts the passes ran (`report.directories > 0`). From mkfs-ext4 4.0.0
-  `check_only()` skips a clean filesystem, and fio-ext4 never marks one
-  dirty, so the five assertions would have passed without checking (#7).
+### Changed
+- mkfs-ext4 is pinned to `v4.1.0` (was `v3.0.0`, #10). The re-exported
+  mkfs-ext4 types (`CachedDevice`, `CacheStats`, `FileType`) are now
+  v4.1.0's, so a consumer that also takes mkfs-ext4 directly moves to the same
+  tag (stormblock#300). With v4.1.0, `fsck::check` replays a dirty journal and
+  releases orphans before repairing, as e2fsck does.
+
+### Added
+- **test:** The kernel verification runs in a test container,
+  `fio-ext4-test` (`test/`), run by stormcentral with `stormcentral test run
+  fio.ext4.rs short|medium|long` (#5). It formats with the pinned `mkfs-ext4`
+  and fills with `fio-ext4`. `e2fsck -fn` and a real kernel's loop mount then
+  check the result: contents byte for byte, a kernel write, and `e2fsck -fn`
+  again. With no loop device or no ext4 driver it reports skip, never pass.
+  `tests/verify-on-linux.sh` is gone.
+
+### Fixed
+- **test:** Every fsck assertion forces the check:
+  `FsckOptions::check_only().force(true)`, asserting
+  `report.scope == CheckScope::Forced` and `report.directories > 0`.
+  Without force, a clean filesystem is skipped and the assertions checked
+  nothing (#7, #10).
+
+### Documentation
+- README *Verified* and CLAUDE.md rule 4 describe the test container.
 
 ## [v1.7.1] — 2026-10-06
 
