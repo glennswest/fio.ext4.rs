@@ -104,6 +104,13 @@ too, the finding is about the reader.
       mkfs.ext4.rs 89091cd (skip-when-clean): forced, all pass; with force
       stripped, 37 assertions fail "fsck skipped the filesystem". When the pin
       moves to v4.0.0, `force(true)` and `CheckScope::Forced` become usable.
+- [ ] Issue #10 — move the mkfs-ext4 pin from v3.0.0 to **v4.1.0** (a6e4519;
+      backward-compatible with v4.0.0, replays a dirty journal before
+      repairing). Stays a tag (#9 waits on mkfs.ext4.rs#19; the master's
+      recommendation there is a release tag). Then the five fsck assertions
+      use `FsckOptions::check_only().force(true)` and assert
+      `report.scope == CheckScope::Forced`. Release as fio-ext4 1.8.0 so
+      stormblock (stormblock#300) can follow to the same tag.
 - [x] Issue #4 — the superblock read at byte 1024 refused on a 4096-byte-
       block device (mkfs.ext4.rs#5 is the write side). Every byte this crate
       touches goes through `mkfs_ext4::fs::Filesystem`, so the fix is there:
