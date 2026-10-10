@@ -13,10 +13,10 @@
 #           link, modes) on ext4
 #   long    medium, and a 200 MiB file on each of ext4, ext3 and ext2
 #
-# The kernel checks need a loop device and a mount, so the pod is privileged
-# (test/requires.toml). A node that cannot give it one — no loop driver, no
-# ext4 in its kernel, an unprivileged pod — gets those checks as skip, never
-# pass; the e2fsck checks still run.
+# The kernel checks need a loop device and a mount. This pod is not
+# privileged (owner, #5), so here they report skip, never pass; the e2fsck
+# checks still run. The kernel's verdict comes from the testhost boot VM,
+# tests/vm/ (`stormcentral testhost boot`), which runs these cases as PID 1.
 #
 # Output: one JSON object per test on stdout, then a summary. Exit 0 all
 # passed (or skipped), 1 a test failed, 2 the test could not run.
