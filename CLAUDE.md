@@ -85,7 +85,7 @@ too, the finding is about the reader.
 - [x] Issues #6/#8 — `sc-build` failed: the `[patch]` to `../mkfs.ext4.rs`
       has no sibling on the build box. The patch moved to a gitignored
       `.cargo/config.toml`; `Cargo.lock` resolves mkfs-ext4 from the v3.0.0 tag.
-- [ ] Issue #5 — the kernel check runs in a throwaway VM (owner,
+- [x] Issue #5 — the kernel check runs in a throwaway VM (owner,
       2026-10-06: `stormcentral testhost boot`, not root, not a privileged
       pod). `tests/vm/` after mkfs.ext4.rs#15 / fio.xfs.rs#12:
       `build-image.sh` makes a UEFI disk (Shell → the build VM's kernel +
@@ -97,7 +97,10 @@ too, the finding is about the reader.
       and writes again, `e2fsck -fn`; prints `VERIFY PASS`/`VERIFY FAIL`.
       Built by sc-build (`SC_BUILD_OUT`), booted on nanatest1. The `test/`
       container stays for the test standard but is no longer privileged:
-      its kernel checks report skip there.
+      its kernel checks report skip there. Verified 2026-10-10: image built
+      by sc-build on 584e70c (kernel 7.2.8-200.fc44, mkfs-ext4 a6e4519,
+      e2fsck 1.47.3); `testhost boot nanatest1` run 37320f36bd printed
+      VERIFY PASS after 60 s, all seven cases clean.
 - [x] Issue #7 — the five fsck assertions use `check_only()` without force;
       at mkfs-ext4 4.0.0 a clean filesystem is skipped and they check nothing.
       Fix: `FsckOptions { force: true, ..check_only() }` (the field exists in
