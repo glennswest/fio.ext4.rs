@@ -84,18 +84,19 @@ too, the finding is about the reader.
 - [x] Issues #6/#8 — `sc-build` failed: the `[patch]` to `../mkfs.ext4.rs`
       has no sibling on the build box. The patch moved to a gitignored
       `.cargo/config.toml`; `Cargo.lock` resolves mkfs-ext4 from the v3.0.0 tag.
-- [ ] Issue #5: move the kernel verification into a `test/` container
-      (`stormcentral test run fio.ext4.rs <suite>`, image
-      `test-fio-ext4-rs-<suite>`). `test/build.sh` builds static musl
-      `fio-ext4` and the pinned `mkfs-ext4` (`-p mkfs-ext4 --features
-      mkfs-ext4/cli`, so it is the version `Cargo.lock` pins);
-      `test/Containerfile` is fedora-minimal + e2fsprogs + util-linux;
-      `/test` (`test/test.sh`) formats, fills, `e2fsck -fn`, loop-mounts,
-      compares sha256, lets the kernel write, `e2fsck -fn` again; JSON lines
-      out. `requires.toml`: privileged. No loop device or no ext4 in the
-      kernel: skip, never pass. short = ext4; medium = ext4/ext3/ext2 + a tar
-      unpack (symlink, hard link); long = medium + a 200 MiB file.
-      `tests/verify-on-linux.sh` goes; README/CLAUDE rule 4 point here.
+- [ ] Issue #5 — the kernel check runs in a throwaway VM (owner,
+      2026-10-06: `stormcentral testhost boot`, not root, not a privileged
+      pod). `tests/vm/` after mkfs.ext4.rs#15 / fio.xfs.rs#12:
+      `build-image.sh` makes a UEFI disk (Shell → the build VM's kernel +
+      busybox initramfs with e2fsck, ext4/loop modules, this checkout's
+      `fio-ext4` and the `mkfs-ext4` Cargo.lock pins); `init.sh` (PID 1)
+      runs test.sh's cases — files on ext4/ext3/ext2, a tar layer, 200 MiB
+      on each — userspace write, `e2fsck -fn`, kernel loop-mount and sha256
+      compare, kernel writes, `e2fsck -fn`, fio-ext4 reads the kernel's file
+      and writes again, `e2fsck -fn`; prints `VERIFY PASS`/`VERIFY FAIL`.
+      Built by sc-build (`SC_BUILD_OUT`), booted on nanatest1. The `test/`
+      container stays for the test standard but is no longer privileged:
+      its kernel checks report skip there.
 - [x] Issue #7 — the five fsck assertions use `check_only()` without force;
       at mkfs-ext4 4.0.0 a clean filesystem is skipped and they check nothing.
       Fix: `FsckOptions { force: true, ..check_only() }` (the field exists in
