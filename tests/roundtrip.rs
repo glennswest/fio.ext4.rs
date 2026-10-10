@@ -7,7 +7,7 @@
 use fio_ext4::{Error, Volume};
 use mkfs_ext4::device::MemDevice;
 use mkfs_ext4::format::format;
-use mkfs_ext4::fsck::{self, FsckOptions};
+use mkfs_ext4::fsck::{self, CheckScope, FsckOptions};
 use mkfs_ext4::params::{Params, Profile};
 
 const MIB: u64 = 1024 * 1024;
@@ -24,14 +24,12 @@ async fn fresh(profile: Profile, size: u64) -> MemDevice {
 /// Check the filesystem and panic with the findings if it is not clean.
 async fn assert_clean(dev: &MemDevice, what: &str) {
     // `e2fsck -fn`: check even though the superblock says clean, as
-    // mkfs-ext4 4.0.0 skips a clean filesystem without `force` (#7).
-    let forced = FsckOptions {
-        force: true,
-        ..FsckOptions::check_only()
-    };
+    // mkfs-ext4 skips a clean filesystem without `force` (#7, #10).
+    let forced = FsckOptions::check_only().force(true);
     let report = fsck::check(dev, &forced).await.unwrap();
-    // Only the passes count directories, so a skipped check reports none.
-    assert!(report.directories > 0, "fsck skipped the filesystem");
+    assert_eq!(report.scope, CheckScope::Forced, "fsck skipped the filesystem");
+    // Only the passes count directories: a check that ran but read nothing.
+    assert!(report.directories > 0, "fsck read no directories");
     assert!(
         report.is_clean(),
         "{what}: filesystem is not clean:\n{}",

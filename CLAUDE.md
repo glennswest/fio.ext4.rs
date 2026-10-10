@@ -8,7 +8,7 @@ mount, no loop device.
 - **Licence:** MIT OR Apache-2.0
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
   seam, the read layer, `fsck` and the write-back `CachedDevice`. `fio-ext4`
-  depends on it by git, pinned to a tag (currently `v3.0.0`, see
+  depends on it by git, pinned to a tag (currently `v4.1.0`, see
   `Cargo.toml`). There is no `[patch]` in `Cargo.toml`: the build box has no
   sibling checkout, so one breaks `sc-build` (#6, #8). To develop against the
   sibling, put the patch in the gitignored `.cargo/config.toml` (the snippet

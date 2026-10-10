@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### 2026-10-10
+- **feat:** mkfs-ext4 is pinned to `v4.1.0` (was `v3.0.0`, #10). Re-exported
+  mkfs-ext4 types (`CachedDevice`, `BlockDevice`, …) are now v4.1.0's, so a
+  consumer that also takes mkfs-ext4 directly must move to the same tag.
+  v4.1.0's `fsck::check` replays a dirty journal and releases orphans before
+  repairing, as e2fsck does.
+- **test:** The five fsck assertions use `FsckOptions::check_only().force(true)`
+  and assert `report.scope == CheckScope::Forced`, which v4 makes available;
+  `report.directories > 0` stays as a check that the passes read the tree.
+
 ### 2026-10-06
 - **test:** The kernel verification is a test container, `fio-ext4-test`
   (`test/`, per the stormcos test standard), run by stormcentral on every test
