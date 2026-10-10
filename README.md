@@ -107,7 +107,8 @@ ext3 and ext2 — is built entirely in userspace (`mkfs-ext4` formats,
 SC_BUILD_OUT=tmp/fio-ext4-verify.img SC_BUILD_OUT_TO=tmp/fio-ext4-verify.img \
   sc-build 'tests/vm/build-image.sh tmp/fio-ext4-verify.img'
 stormcentral testhost boot nanatest1 --image tmp/fio-ext4-verify.img \
-  --expect 'VERIFY PASS' --fail 'VERIFY FAIL' --timeout 900 --memory 2048
+  --expect 'VERIFY PASS' --fail 'VERIFY FAIL' --timeout 900 --memory 2048 \
+  --url http://stormcentral.g8.lo
 ```
 
 The image carries the build VM's own kernel, busybox, `e2fsck`, this
@@ -124,8 +125,9 @@ report *skip* there, never pass.
 | `medium` | that on ext4, ext3 and ext2, plus a gzipped tar layer (symlink, hard link, modes) unpacked on ext4 |
 | `long` | `medium`, plus a 200 MiB file on each of ext4, ext3 and ext2 |
 
-`cargo test`, which runs in `sc-build`, rebuilds and re-reads every image
-with `mkfs-ext4`'s `fsck`.
+`cargo test`, which runs in `sc-build`, rebuilds and re-reads its images
+with `mkfs-ext4`'s forced `fsck` (`tests/extent_tree.rs` does not yet, issue
+#11).
 
 ## Attributes
 
@@ -199,8 +201,9 @@ leaf at a time as the kernel does. One code path serves the first conversion
 and every growth after it, and leaves are left a fifth empty so a rebuild is
 needed about once per two hundred names.
 
-Verified against a real kernel at both 1 KiB and 4 KiB blocks, with 7,500
-names: `e2fsck -fn` clean, every name resolved by the kernel *through the
+Checked by hand against a real kernel at both 1 KiB and 4 KiB blocks, with
+7,500 names (no harness repeats this yet: `tests/vm/` does not build an
+indexed directory, issue #12): `e2fsck -fn` clean, every name resolved by the kernel *through the
 index* rather than by listing, a name that was never there still absent, the
 kernel able to add its own name to our tree, and `e2fsck` clean again
 afterwards. `debugfs -R htree_dump` reads the tree back with the counts,
@@ -208,7 +211,8 @@ limits and checksums it expects.
 
 ## Other API
 
-Also on `Volume`: `lookup`, `exists`, `stat` and `read_dir`; `append` and
+Also on `Volume`: `open` and `open_cached`; `write_with`, `mkdir_with` and
+`mkdir_all_with` (the `Attrs` forms); `lookup`, `exists`, `stat` and `read_dir`; `append` and
 `write_at` (writes at an offset); `unlink`, `rmdir` and `remove_all`; `link`
 (hard links), `rename`, `symlink` / `read_link`, `mknod` / `device_numbers`;
 `chmod` / `chown` / `set_times`; extended attributes through `get_xattr`,
@@ -219,7 +223,9 @@ memory or a stream (`unpack_tar`, `unpack_tar_from`, `unpack_tar_into`,
 timestamp stamped on new and changed files so an image build is reproducible
 (the role `SOURCE_DATE_EPOCH` plays for `mke2fs`). The crate root also
 re-exports `CachedDevice` and `CacheStats` (mkfs-ext4's write-back cache),
-`Xattr`, and the `UnpackReport` / `PackReport` counts the tar calls return.
+`Xattr`, `Attrs`, `Entry`, `Special`, `Stat`, and the `UnpackReport` /
+`PackReport` counts the tar calls return; `volume::FileType` is mkfs-ext4's
+directory-entry file type.
 Minimum Rust is 1.75.
 
 ## Licence

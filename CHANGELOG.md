@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### 2026-10-10
+- **docs:** Refreshed README, CLAUDE.md and the `test/Containerfile` header
+  from the code. The `testhost boot` command gets its `--url`. *Other API*
+  lists `open`/`open_cached`, the `*_with` forms and every crate-root
+  re-export. The `dir_index` kernel verification is stated as a by-hand
+  check (#12), and the `cargo test` fsck claim excepts `tests/extent_tree.rs`
+  (#11).
 - **test:** The kernel verification runs in a throwaway VM booted by
   `stormcentral testhost boot` (#5, owner: not root, not a privileged pod).
   `tests/vm/build-image.sh` (run through sc-build) makes a UEFI disk with the

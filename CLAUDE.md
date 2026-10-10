@@ -38,6 +38,7 @@ mount, no loop device.
    half-updated tree if a write fails partway.
 3. **Every test ends by checking the filesystem.** A file writer that leaves
    `fsck` complaining has damaged the filesystem, not written a file.
+   (`tests/extent_tree.rs` does not yet — #11.)
 4. **The kernel is the judge.** The testhost boot VM (`tests/vm/`) is the
    test that counts: images written in userspace, then `e2fsck -fn` and a
    real kernel's loop mount, contents compared byte for byte, the kernel
@@ -126,6 +127,9 @@ too, the finding is about the reader.
       block size is known. Here: the pin, and `tests/strict_sector.rs`
       opening, writing, unpacking and checking on `MemDevice::strict` —
       the device that refuses what a stormblock thin volume refuses.
+- [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
+- [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
+      ~7,500-name case to `tests/vm/init.sh`.
 - [x] Issue #3 — kill the measured 280x–1065x write amplification
       (mkfs.ext4.rs#4). Three parts, in this order:
       1. `unpack_file` stops calling `write_at` per 64 KiB chunk. `write_at`
