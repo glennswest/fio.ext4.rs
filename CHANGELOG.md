@@ -2,14 +2,16 @@
 
 ## [Unreleased]
 
-### 2026-10-13
-- **chore:** mkfs-ext4 is pinned to `v4.1.1` (was `v4.1.0`, #13, #15). Its
-  `fsck` tracks blocks as runs rather than a bit per block, so a 1 PiB
-  filesystem checks in ~1 GiB of memory where v4.1.0 asked for 32 GiB
+## [v1.8.1] — 2026-10-13
+
+### Changed
+- mkfs-ext4 is pinned to `v4.1.1` (was `v4.1.0`, #13, #15). Its `fsck`
+  tracks blocks as runs rather than a bit per block, so a 1 PiB filesystem
+  checks in ~1 GiB of memory where v4.1.0 asked for 32 GiB
   (mkfs.ext4.rs#11). No API change; a consumer that also takes mkfs-ext4
   directly moves to the same tag (stormblock#300).
 
-### 2026-10-10
+### Documentation and tests
 - **docs:** Refreshed README, CLAUDE.md and the `test/Containerfile` header
   from the code. The `testhost boot` command gets its `--url`. *Other API*
   lists `open`/`open_cached`, the `*_with` forms and every crate-root
