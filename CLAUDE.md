@@ -127,13 +127,15 @@ too, the finding is about the reader.
       block size is known. Here: the pin, and `tests/strict_sector.rs`
       opening, writing, unpacking and checking on `MemDevice::strict` —
       the device that refuses what a stormblock thin volume refuses.
-- [ ] Issue #13 (and #15) — release pinning mkfs-ext4 **v4.1.1** (14d5af8;
-      its fsck holds `BlockRuns`, not a bit per block: 1 PiB checks in ~1 GiB,
-      where v4.1.0 asks for 32 GiB — mkfs.ext4.rs#11), so stormblock#300 moves
-      both pins together. mkfs.ext4.rs#20 tagged v4.1.1 on 2026-10-13; only the
-      version changed in its Cargo.toml, so Cargo.lock's entry was moved by
-      hand (no cargo on the session VM). Next: sc-build, then release fio-ext4
-      v1.8.1, comment on stormblock#300, close #13 and #15.
+- [x] Issue #13 (and #15) — released fio-ext4 **v1.8.1** pinning mkfs-ext4
+      **v4.1.1** (14d5af8; its fsck holds `BlockRuns`, not a bit per block:
+      1 PiB checks in ~1 GiB, where v4.1.0 asks for 32 GiB — mkfs.ext4.rs#11),
+      so stormblock#300 moves both pins together. Only the version changed in
+      mkfs-ext4's Cargo.toml, so Cargo.lock was edited by hand (no cargo on
+      the session VM) and every build ran `--locked` to prove it. Verified by
+      sc-build: ddf3737 build, clippy `-D warnings` and every test pass with
+      mkfs-ext4 v4.1.1#14d5af82; the release commit d788f78 builds and passes
+      clippy `--locked`.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
