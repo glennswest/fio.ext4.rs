@@ -405,8 +405,8 @@ dependencies = [
 
 [[package]]
 name = "mkfs-ext4"
-version = "4.1.0"
-source = "git+https://github.com/glennswest/mkfs.ext4.rs?tag=v4.1.0#a6e4519dbc6e21682055ed85f539f1f7f2dd70ba"
+version = "4.1.1"
+source = "git+https://github.com/glennswest/mkfs.ext4.rs?tag=v4.1.1#14d5af826b1b0e6a8a38a1e3d35248266984a3d1"
 dependencies = [
  "async-trait",
  "bitflags",
