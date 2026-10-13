@@ -127,6 +127,13 @@ too, the finding is about the reader.
       block size is known. Here: the pin, and `tests/strict_sector.rs`
       opening, writing, unpacking and checking on `MemDevice::strict` —
       the device that refuses what a stormblock thin volume refuses.
+- [ ] Issue #13 — release pinning mkfs-ext4 **v4.1.1** (its fsck holds
+      `BlockRuns`, not a bit per block: 1 PiB checks in ~1 GiB, where v4.1.0
+      asks for 32 GiB — mkfs.ext4.rs#11), so stormblock#300 moves both pins
+      together. **Blocked on mkfs.ext4.rs#20**: v4.1.1 is released on its main
+      (14d5af8) but not tagged; as of 2026-10-13 `ls-remote` ends at v4.1.0.
+      When the tag exists: `tag = "v4.1.1"`, `cargo update -p mkfs-ext4`,
+      sc-build, then release fio-ext4 v1.8.1 and comment on stormblock#300.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
