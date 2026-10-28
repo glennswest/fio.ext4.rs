@@ -12,7 +12,8 @@ commit. `fio-ext4` re-exports
 
 ```toml
 [dependencies]
-fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", tag = "v1.8.1" }
+# v1.8.2
+fio-ext4 = { git = "https://github.com/glennswest/fio.ext4.rs", rev = "7a13228c7465abd2bc1390263071756364a06079" }
 ```
 
 ```rust

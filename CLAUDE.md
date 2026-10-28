@@ -137,11 +137,15 @@ too, the finding is about the reader.
       sc-build: ddf3737 build, clippy `-D warnings` and every test pass with
       mkfs-ext4 v4.1.1#14d5af82; the release commit d788f78 builds and passes
       clippy `--locked`.
-- [ ] Issue #17 (P0, blocks 12.37 via stormblock-registry#140) — pin
+- [x] Issue #17 (P0, blocks 12.37 via stormblock-registry#140) — pin
       mkfs-ext4 by `rev = "14d5af8…"` (the commit of v4.1.1), not `tag`: the
       release gate's `git_dep_unpinned` refuses a tag, and a consumer cannot
       re-pin it with `[patch]` on the same URL. No behaviour change; released
-      as fio-ext4 **v1.8.2** so stormblock-registry can pin that by rev.
+      as fio-ext4 **v1.8.2** (7a13228) so stormblock-registry can pin that by
+      rev. Cargo.lock edited by hand (`?rev=<sha>#<sha>`), proved by
+      `--locked`. Verified by sc-build: 61a2c59 build and every test pass,
+      clippy `-D warnings` clean, `cargo tree` resolves mkfs-ext4 v4.1.1
+      `?rev=14d5af82…`; release commit 7a13228 builds and tests `--locked`.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.

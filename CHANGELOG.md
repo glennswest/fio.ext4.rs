@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-10-28
+- **docs:** README's dependency snippet takes fio-ext4 by `rev` (v1.8.2's
+  commit), as the release gate requires (#17).
+
 ## [v1.8.2] — 2026-10-28
 
 ### Fixed
