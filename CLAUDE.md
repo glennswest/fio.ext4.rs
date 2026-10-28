@@ -8,11 +8,12 @@ mount, no loop device.
 - **Licence:** MIT OR Apache-2.0
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
   seam, the read layer, `fsck` and the write-back `CachedDevice`. `fio-ext4`
-  depends on it by git, pinned to a tag (currently `v4.1.1`, see
-  `Cargo.toml`). There is no `[patch]` in `Cargo.toml`: the build box has no
+  depends on it by git, pinned by commit (`rev`, currently 14d5af8 = tag
+  `v4.1.1`, see `Cargo.toml`) — never by tag or branch, which the release
+  gate refuses (#17). There is no `[patch]` in `Cargo.toml`: the build box has no
   sibling checkout, so one breaks `sc-build` (#6, #8). To develop against the
   sibling, put the patch in the gitignored `.cargo/config.toml` (the snippet
-  is in `Cargo.toml`), and bump the tag before pushing.
+  is in `Cargo.toml`), and move the rev before pushing.
 - **Ships as:** a library, taken by git at a tag, plus the `fio-ext4` binary
   (default `cli` feature; `gzip` is also default). It is not published to
   crates.io, and it has no service, ports, config file or container image.

@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### 2026-10-28
+- **fix:** mkfs-ext4 is pinned by `rev` (14d5af8, the commit of its v4.1.1
+  tag) rather than `tag = "v4.1.1"` (#17). The release gate refuses a tag as
+  an unpinned git dependency, and a consumer cannot re-pin it with `[patch]`
+  on the same URL, so stormblock-registry's golden could not pass. Same
+  code, no behaviour change.
+
 ## [v1.8.1] — 2026-10-13
 
 ### Changed

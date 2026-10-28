@@ -21,13 +21,16 @@ path = "src/lib.rs"
 # resolves when the path is inside the same repository, so a path here would
 # make this crate unusable by anything that takes it by git (fio.ext4.rs#1).
 #
-# Pinned to a tag rather than a branch, so a consumer's build is reproducible:
-# floating on main means two builds a day apart can resolve differently.
+# Pinned to a commit (`rev`), not a branch or a tag (#17): floating on main
+# means two builds a day apart resolve differently, and a tag can be moved, so
+# the release gate refuses one (`git_dep_unpinned`). A consumer cannot re-pin
+# it either: cargo refuses a `[patch]` to the same git URL. The rev is the
+# commit of mkfs-ext4's v4.1.1 tag.
 # `features = ["std"]` is required as of mkfs-ext4 2.0.0: `std` became a default
 # feature so a UEFI driver can link the crate's synchronous read path, which
 # means `default-features = false` now leaves the `no_std` core rather than the
 # whole crate. This crate is async and wants all of it.
-mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", tag = "v4.1.1", default-features = false, features = ["std"] }
+mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", rev = "14d5af826b1b0e6a8a38a1e3d35248266984a3d1", default-features = false, features = ["std"] }
 
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "rt", "sync", "macros"] }
 async-trait = "0.1"

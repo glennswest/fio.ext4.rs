@@ -5,7 +5,9 @@ write files with no kernel, no mount and no loop device.
 
 ## Using it
 
-Not on crates.io; take it by git, pinned to a tag. `fio-ext4` re-exports
+Not on crates.io; take it by git, pinned to a commit (`rev`) — the release
+gate refuses a `tag` or `branch` as unpinned. Each release tag names its
+commit. `fio-ext4` re-exports
 `mkfs_ext4`, so this is the only dependency you need:
 
 ```toml
