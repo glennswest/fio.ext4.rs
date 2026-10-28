@@ -5,6 +5,9 @@
 ### 2026-10-28
 - **docs:** README's dependency snippet takes fio-ext4 by `rev` (v1.8.2's
   commit), as the release gate requires (#17).
+- **docs:** Refreshed README, CLAUDE.md and docs from the code for the
+  changes since 2026-10-16 (only the #17 rev pin); no drift found. Promises
+  the code does not yet keep are already issues: #11, #12, #14.
 
 ## [v1.8.2] — 2026-10-28
 
