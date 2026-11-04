@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### 2026-11-04
+- **docs:** Refreshed docs against `git log --since=2026-10-28`: the only
+  commit is the 2026-10-28 research note (docs only), so no code changed and
+  no drift found. Open promises remain issues #11, #12, #14.
+
 ### 2026-10-28
 - **docs:** README's dependency snippet takes fio-ext4 by `rev` (v1.8.2's
   commit), as the release gate requires (#17).
