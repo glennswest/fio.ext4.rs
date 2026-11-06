@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-11-06
+- **docs:** Work plan records #18, the pin to the `meta_bg` descriptor fix,
+  as waiting on mkfs.ext4.rs#33 (not yet fixed or released).
+
 ### 2026-11-04
 - **docs:** Refreshed docs against `git log --since=2026-10-28`: the only
   commit is the 2026-10-28 research note (docs only), so no code changed and

@@ -146,6 +146,13 @@ too, the finding is about the reader.
       `--locked`. Verified by sc-build: 61a2c59 build and every test pass,
       clippy `-D warnings` clean, `cargo tree` resolves mkfs-ext4 v4.1.1
       `?rev=14d5af82…`; release commit 7a13228 builds and tests `--locked`.
+- [ ] Issue #18 (P1, for stormblock#512) — **blocked on mkfs.ext4.rs#33**, open
+      and unfixed as of 2026-11-06 (its main is still the v4.1.1 code, no newer
+      tag): `write_group_descs` ignores `meta_bg`, so `Volume::flush` corrupts
+      any ext4 past ~192 TiB. When it is released: move the `rev` to the release
+      commit, add a test that writes into a `meta_bg` filesystem over 64 groups
+      (16 GiB reproduces it, 64 GiB more so) and ends with a forced fsck, release
+      fio-ext4 so stormblock can take both at one rev.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
