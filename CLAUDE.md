@@ -154,9 +154,8 @@ too, the finding is about the reader.
       writes into meta_bg filesystems over 64 groups (1 KiB blocks in memory,
       16 GiB sparse at 4 KiB with `e2fsck -fn` when present), forced fsck;
       negative control of the test on the v4.1.1 pin; release fio-ext4
-      v1.9.0 (new upstream behaviour, no API change → patch would do, but the
-      pin move carries new mkfs-ext4 API: minor) so stormblock takes both at
-      one rev.
+      v1.8.3 (a bug fix: mkfs-ext4 itself moved only its patch number) so
+      stormblock takes both at one rev.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
