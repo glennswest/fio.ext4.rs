@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-11-07
+- **docs:** README's dependency snippet takes fio-ext4 v1.8.3 by `rev`
+  (624cbf7, its release commit).
+
 ### 2026-11-06
 - **docs:** Work plan records #18, the pin to the `meta_bg` descriptor fix,
   as waiting on mkfs.ext4.rs#33 (not yet fixed or released).
