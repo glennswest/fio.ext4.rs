@@ -25,12 +25,12 @@ path = "src/lib.rs"
 # means two builds a day apart resolve differently, and a tag can be moved, so
 # the release gate refuses one (`git_dep_unpinned`). A consumer cannot re-pin
 # it either: cargo refuses a `[patch]` to the same git URL. The rev is the
-# commit of mkfs-ext4's v4.1.1 tag.
+# commit of mkfs-ext4's v4.1.3 tag (the meta_bg descriptor fix, #18).
 # `features = ["std"]` is required as of mkfs-ext4 2.0.0: `std` became a default
 # feature so a UEFI driver can link the crate's synchronous read path, which
 # means `default-features = false` now leaves the `no_std` core rather than the
 # whole crate. This crate is async and wants all of it.
-mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", rev = "14d5af826b1b0e6a8a38a1e3d35248266984a3d1", default-features = false, features = ["std"] }
+mkfs-ext4 = { git = "https://github.com/glennswest/mkfs.ext4.rs", rev = "e009cf407be0e971efec02160e6f8cdce2db58d1", default-features = false, features = ["std"] }
 
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "rt", "sync", "macros"] }
 async-trait = "0.1"
