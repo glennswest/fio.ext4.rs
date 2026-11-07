@@ -2,18 +2,6 @@
 
 ## [Unreleased]
 
-### 2026-11-07
-- **fix:** mkfs-ext4 pinned at v4.1.3 (`rev` e009cf4) for its meta_bg
-  descriptor flush (mkfs.ext4.rs#33): `Volume::flush` no longer writes the
-  whole descriptor table after every backup superblock of a `meta_bg`
-  filesystem, over that group's bitmaps and inode table — which corrupted
-  any ext4 written past ~192 TiB (#18, stormblock#512). It also carries
-  v4.1.2's fix for stormblock#293 (mkfs.ext4.rs#25).
-- **test:** `tests/meta_bg.rs` writes through `Volume` into `meta_bg`
-  filesystems of 128 groups (1 GiB at 1 KiB blocks in memory; 16 GiB sparse
-  at 4 KiB), reopens, reads back and ends with a forced fsck, plus real
-  `e2fsck -fn` on the 16 GiB image when the host has it.
-
 ### 2026-11-06
 - **docs:** Work plan records #18, the pin to the `meta_bg` descriptor fix,
   as waiting on mkfs.ext4.rs#33 (not yet fixed or released).
@@ -29,6 +17,22 @@
 - **docs:** Refreshed README, CLAUDE.md and docs from the code for the
   changes since 2026-10-16 (only the #17 rev pin); no drift found. Promises
   the code does not yet keep are already issues: #11, #12, #14.
+
+## [v1.8.3] — 2026-11-07
+
+### Fixed
+- mkfs-ext4 pinned at v4.1.3 (`rev` e009cf4) for its meta_bg descriptor
+  flush (mkfs.ext4.rs#33): `Volume::flush` no longer writes the whole
+  descriptor table after every backup superblock of a `meta_bg` filesystem,
+  over that group's bitmaps and inode table — which corrupted any ext4
+  written past ~192 TiB (#18, stormblock#512). It also carries v4.1.2's fix
+  for stormblock#293 (mkfs.ext4.rs#25).
+
+### Added
+- `tests/meta_bg.rs`: writes through `Volume` into `meta_bg` filesystems of
+  128 groups (1 GiB at 1 KiB blocks in memory; 16 GiB sparse at 4 KiB),
+  reopens, reads back and ends with a forced fsck, plus real `e2fsck -fn` on
+  the 16 GiB image when the host has it. On the v4.1.1 pin both cases fail.
 
 ## [v1.8.2] — 2026-10-28
 
