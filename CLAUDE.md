@@ -4,12 +4,12 @@ Async userspace file I/O into an ext2/ext3/ext4 filesystem. No kernel, no
 mount, no loop device.
 
 - **Crate:** `fio-ext4` (lib `fio_ext4`)
-- **Version:** 1.8.2 — `Cargo.toml` is the single version location
+- **Version:** 1.8.3 — `Cargo.toml` is the single version location
 - **Licence:** MIT OR Apache-2.0
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
   seam, the read layer, `fsck` and the write-back `CachedDevice`. `fio-ext4`
-  depends on it by git, pinned by commit (`rev`, currently 14d5af8 = tag
-  `v4.1.1`, see `Cargo.toml`) — never by tag or branch, which the release
+  depends on it by git, pinned by commit (`rev`, currently e009cf4 = tag
+  `v4.1.3`, see `Cargo.toml`) — never by tag or branch, which the release
   gate refuses (#17). There is no `[patch]` in `Cargo.toml`: the build box has no
   sibling checkout, so one breaks `sc-build` (#6, #8). To develop against the
   sibling, put the patch in the gitignored `.cargo/config.toml` (the snippet
@@ -146,16 +146,19 @@ too, the finding is about the reader.
       `--locked`. Verified by sc-build: 61a2c59 build and every test pass,
       clippy `-D warnings` clean, `cargo tree` resolves mkfs-ext4 v4.1.1
       `?rev=14d5af82…`; release commit 7a13228 builds and tests `--locked`.
-- [ ] Issue #18 (P1, for stormblock#512 and stormblock#293) — **in progress
-      2026-11-07**: mkfs.ext4.rs#33 is released as mkfs-ext4 **v4.1.3**
-      (e009cf4; also carries v4.1.2's #25 fix). Steps: move the `rev` to
-      e009cf4 (only the version changed in its Cargo.toml, so Cargo.lock is
-      edited by hand and proved by `--locked`); add `tests/meta_bg.rs` —
-      writes into meta_bg filesystems over 64 groups (1 KiB blocks in memory,
-      16 GiB sparse at 4 KiB with `e2fsck -fn` when present), forced fsck;
-      negative control of the test on the v4.1.1 pin; release fio-ext4
-      v1.8.3 (a bug fix: mkfs-ext4 itself moved only its patch number) so
-      stormblock takes both at one rev.
+- [x] Issue #18 (P1, for stormblock#512 and stormblock#293) — mkfs-ext4
+      pinned at **v4.1.3** (`rev` e009cf4, the meta_bg descriptor fix of
+      mkfs.ext4.rs#33; carries v4.1.2's #25 fix too). Cargo.lock edited by
+      hand, proved by `--locked`. `tests/meta_bg.rs` writes through `Volume`
+      into meta_bg filesystems of 128 groups (1 GiB at 1 KiB blocks, 8 meta
+      block groups; 16 GiB sparse at 4 KiB), reopens, reads back, forced
+      fsck, and real `e2fsck -fn` on the 16 GiB image. Verified by sc-build:
+      5bde658 build, every test, clippy `-D warnings` clean, `e2fsck -fn` rc 0,
+      `cargo tree` resolves v4.1.3#e009cf40. Negative control: the same test
+      on the v4.1.1 pin (752a8ac) fails both cases — fsck pass 5 finds group
+      0's block bitmap and groups 16–21's counts wrong. Released as fio-ext4
+      **v1.8.3**. Not covered here: a 256 TiB image (stormblock's
+      `examples/ext4_large bare 256T` is the end-to-end check).
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
