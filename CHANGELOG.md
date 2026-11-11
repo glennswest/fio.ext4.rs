@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 2026-11-11
+- **docs:** Refreshed docs against `git log --since=2026-11-04`: v1.8.3 and
+  the mkfs-ext4 v4.1.3 pin already match code in README, CLAUDE.md and
+  Cargo.toml; README now describes `tests/meta_bg.rs` (#18). Open promises
+  remain issues #11, #12, #14; no new drift found.
+
 ### 2026-11-07
 - **docs:** README's dependency snippet takes fio-ext4 v1.8.3 by `rev`
   (624cbf7, its release commit).

@@ -132,6 +132,11 @@ report *skip* there, never pass.
 with `mkfs-ext4`'s forced `fsck` (`tests/extent_tree.rs` does not yet, issue
 #11).
 
+`tests/meta_bg.rs` writes through `Volume` into `meta_bg` filesystems of 128
+groups (1 GiB at 1 KiB blocks; 16 GiB sparse at 4 KiB), reopens, reads back,
+and checks with the forced `fsck` (and real `e2fsck -fn` on the 16 GiB image),
+which fails on the mkfs-ext4 v4.1.1 pin (#18).
+
 ## Attributes
 
 Permissions and ownership are first-class, because an image without them is not
