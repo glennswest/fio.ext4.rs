@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### 2026-11-18
+- **docs:** Refreshed docs against `git log --since=2026-11-11`: the only
+  commit is the 2026-11-18 research note (docs only), so no code changed and
+  no drift found. v1.8.3 and the mkfs-ext4 v4.1.3 pin still match README,
+  CLAUDE.md and Cargo.toml. Open promises remain issues #11, #12, #14.
+
 ### 2026-11-11
 - **docs:** Refreshed docs against `git log --since=2026-11-04`: v1.8.3 and
   the mkfs-ext4 v4.1.3 pin already match code in README, CLAUDE.md and
