@@ -14,6 +14,7 @@ use mkfs_ext4::params::{Params, Profile};
 use mkfs_ext4::structs::xattr;
 
 use crate::error::Error;
+use crate::tar::{self, EntryKind, Header};
 use crate::volume::{Special, Volume};
 use crate::Attrs;
 
@@ -354,4 +355,205 @@ async fn rewrites_keep_the_attribute_block_in_i_blocks_ext4() {
 #[tokio::test]
 async fn rewrites_keep_the_attribute_block_in_i_blocks_ext2() {
     spilled_rewrites(Profile::Ext2, 1024).await;
+}
+
+// ---- archives ----
+
+fn tar_file(path: &str) -> Header {
+    Header {
+        path: path.into(),
+        kind: EntryKind::File,
+        mode: 0o644,
+        mtime: 1_700_000_000,
+        ..Default::default()
+    }
+}
+
+async fn archive(entries: &[(Header, &[u8])]) -> Vec<u8> {
+    let mut writer = tar::Writer::new(Vec::new());
+    for (header, data) in entries {
+        writer.append(header, data).await.unwrap();
+    }
+    writer.finish().await.unwrap();
+    writer.into_inner()
+}
+
+/// Findings f12ada4fdef6, d3df6a641775, 285fc60e938a: nothing in an archive
+/// reaches outside the directory it is unpacked into.
+#[tokio::test]
+async fn archive_paths_cannot_climb_out_of_the_destination() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    {
+        let mut vol = open(&dev).await;
+        vol.write("/victim", b"untouched").await.unwrap();
+        vol.mkdir("/sandbox").await.unwrap();
+        vol.flush().await.unwrap();
+
+        let link = Header {
+            path: "link".into(),
+            kind: EntryKind::HardLink,
+            link: "../victim".into(),
+            ..Default::default()
+        };
+        let climbs: Vec<(&str, Vec<u8>)> = vec![
+            ("entry", archive(&[(tar_file("../victim"), &b"pwned"[..])]).await),
+            ("nested", archive(&[(tar_file("a/../../victim"), &b"pwned"[..])]).await),
+            ("hard link", archive(&[(link, &b""[..])]).await),
+            ("whiteout", archive(&[(tar_file("../.wh.victim"), &b""[..])]).await),
+        ];
+        for (what, bytes) in &climbs {
+            for layer in [false, true] {
+                let res = if layer {
+                    vol.unpack_tar_layer(tar::Bytes::new(bytes), "/sandbox").await
+                } else {
+                    vol.unpack_tar_into(tar::Bytes::new(bytes), "/sandbox").await
+                };
+                let e = res.unwrap_err();
+                assert!(matches!(e, Error::InvalidPath(_)), "{what} (layer {layer}): {e}");
+                assert_eq!(vol.read("/victim").await.unwrap(), b"untouched", "{what}");
+            }
+        }
+
+        // A marker that names the directory itself, or its parent.
+        for marker in [".wh..", ".wh...", "d/.wh."] {
+            let bytes = archive(&[(tar_file(marker), &b""[..])]).await;
+            let e = vol
+                .unpack_tar_layer(tar::Bytes::new(&bytes), "/sandbox")
+                .await
+                .unwrap_err();
+            assert!(matches!(e, Error::InvalidName(_)), "{marker}: {e}");
+        }
+        assert!(vol.exists("/sandbox").await.unwrap());
+        assert_eq!(vol.read("/victim").await.unwrap(), b"untouched");
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after refused climbs").await;
+}
+
+/// Finding 2f271dfded9e: a marker that arrives after this layer's own
+/// entries hides only the lower layers.
+#[tokio::test]
+async fn late_whiteouts_spare_the_layer_s_own_entries() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    {
+        let mut vol = open(&dev).await;
+        let lower = archive(&[
+            (tar_file("d/old"), &b"lower"[..]),
+            (tar_file("d/sub/lowerfile"), b"lower"),
+            (tar_file("g/lowerg"), b"lower"),
+        ])
+        .await;
+        vol.unpack_tar_layer(tar::Bytes::new(&lower), "/").await.unwrap();
+
+        let upper = archive(&[
+            (tar_file("d/new"), &b"upper"[..]),
+            (tar_file("d/sub/upper"), b"upper"),
+            (tar_file("d/.wh..wh..opq"), b""),
+            (tar_file("f/kept"), b"upper"),
+            (tar_file("f/.wh.kept"), b""),
+            (tar_file("g/.wh.lowerg"), b""),
+        ])
+        .await;
+        let report = vol.unpack_tar_layer(tar::Bytes::new(&upper), "/").await.unwrap();
+
+        assert_eq!(vol.read("/d/new").await.unwrap(), b"upper", "opaque took this layer's file");
+        assert_eq!(vol.read("/d/sub/upper").await.unwrap(), b"upper");
+        assert!(!vol.exists("/d/old").await.unwrap(), "opaque kept a lower file");
+        assert!(!vol.exists("/d/sub/lowerfile").await.unwrap(), "opaque kept a lower file below");
+        assert_eq!(vol.read("/f/kept").await.unwrap(), b"upper", "a late whiteout took this layer's file");
+        assert!(!vol.exists("/g/lowerg").await.unwrap(), "an ordinary whiteout did nothing");
+        assert_eq!(report.removed, 3, "d/old, d/sub/lowerfile, g/lowerg");
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after late whiteouts").await;
+}
+
+/// Finding 4d4d5c59ed24: a symlink keeps its owner, time and labels through
+/// unpack and pack.
+#[tokio::test]
+async fn symlink_metadata_survives_the_round_trip() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    let label = b"system_u:object_r:bin_t:s0".to_vec();
+    {
+        let mut vol = open(&dev).await;
+        let link = Header {
+            path: "usr/lib64".into(),
+            kind: EntryKind::Symlink,
+            link: "lib".into(),
+            mode: 0o777,
+            uid: 1000,
+            gid: 1001,
+            mtime: 1_600_000_000,
+            xattrs: vec![("security.selinux".into(), label.clone())],
+            ..Default::default()
+        };
+        let bytes = archive(&[(link, &b""[..])]).await;
+        vol.unpack_tar(&bytes).await.unwrap();
+
+        let stat = vol.stat("/usr/lib64").await.unwrap();
+        assert_eq!((stat.uid, stat.gid, stat.mtime), (1000, 1001, 1_600_000_000));
+        assert_eq!(vol.read_link("/usr/lib64").await.unwrap(), "lib");
+        assert_eq!(
+            vol.get_xattr("/usr/lib64", "security.selinux").await.unwrap(),
+            Some(label.clone())
+        );
+
+        let packed = vol.pack_tar("/").await.unwrap();
+        let entries = tar::read(&packed).await.unwrap();
+        let back = entries
+            .iter()
+            .find(|e| e.header.path == "usr/lib64")
+            .expect("the symlink was not packed");
+        assert_eq!(back.header.kind, EntryKind::Symlink);
+        assert_eq!((back.header.uid, back.header.gid), (1000, 1001));
+        assert_eq!(back.header.xattrs, vec![("security.selinux".to_string(), label.clone())]);
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after a labelled symlink").await;
+}
+
+/// A sink that keeps what it is given and remembers the largest write.
+#[derive(Default)]
+struct Recording {
+    bytes: Vec<u8>,
+    largest: usize,
+}
+
+impl tar::Sink for &mut Recording {
+    async fn write_all(&mut self, buf: &[u8]) -> crate::Result<()> {
+        self.largest = self.largest.max(buf.len());
+        self.bytes.extend_from_slice(buf);
+        Ok(())
+    }
+}
+
+/// Finding f06f9c5e6605: packing streams a file in bounded pieces rather
+/// than reading it whole, and holes still read as zeroes.
+#[tokio::test]
+async fn pack_streams_file_contents() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    let big: Vec<u8> = (0..3 * MIB as usize + 123).map(|i| (i % 253) as u8).collect();
+    {
+        let mut vol = open(&dev).await;
+        vol.write("/big", &big).await.unwrap();
+        vol.write("/small", b"tiny").await.unwrap();
+        vol.write("/empty", b"").await.unwrap();
+
+        let mut sink = Recording::default();
+        let report = vol.pack_tar_to(&mut sink, "/").await.unwrap();
+        assert_eq!(report.files, 3);
+        assert!(
+            sink.largest <= 64 * 1024,
+            "a write of {} bytes reached the sink: the file was gathered",
+            sink.largest
+        );
+
+        let entries = tar::read(&sink.bytes).await.unwrap();
+        let get = |p: &str| entries.iter().find(|e| e.header.path == p).unwrap().data.clone();
+        assert_eq!(get("big"), big);
+        assert_eq!(get("small"), b"tiny");
+        assert!(get("empty").is_empty());
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after packing").await;
 }

@@ -5,7 +5,7 @@
 //! loop device — just positional I/O against whatever implements
 //! [`BlockDevice`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use mkfs_ext4::cache::CachedDevice;
 use mkfs_ext4::device::BlockDevice;
@@ -151,6 +151,41 @@ fn join(dir: &str, name: &str) -> String {
     } else {
         format!("{dir}/{name}")
     }
+}
+
+/// Whether this layer added anything strictly below `path`.
+fn has_added_below(added: &BTreeSet<String>, path: &str) -> bool {
+    let prefix = format!("{}/", path.trim_end_matches('/'));
+    added
+        .range(prefix.clone()..)
+        .next()
+        .is_some_and(|p| p.starts_with(&prefix))
+}
+
+/// An archive path, relative and held beneath the extraction root.
+///
+/// Empty and `.` components are dropped; a `..` is refused rather than
+/// resolved, as is a NUL. The archive is the untrusted part: `../victim`
+/// unpacked into `/sandbox` would otherwise reach `/victim` through the
+/// parent's own `..` entry, and `replace` would delete whatever was there
+/// (findings f12ada4fdef6, d3df6a641775, 285fc60e938a).
+fn contained(path: &str) -> Result<String> {
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                return Err(Error::InvalidPath(format!(
+                    "archive entry {path} climbs out of the destination"
+                )))
+            }
+            p if p.contains('\0') => {
+                return Err(Error::InvalidPath(format!("archive entry {path:?} holds a NUL")))
+            }
+            p => parts.push(p),
+        }
+    }
+    Ok(parts.join("/"))
 }
 
 /// Turn an archive's name/value pairs into attributes.
@@ -982,26 +1017,47 @@ impl<D: BlockDevice> Volume<D> {
         type DeferredDir = (String, Attrs, u32, Vec<(String, Vec<u8>)>);
         let mut deferred: Vec<DeferredDir> = Vec::new();
 
+        // Every path this layer has put down so far. A whiteout hides what
+        // the layers below left, never what this one added, whichever order
+        // the archive lists them in (finding 2f271dfded9e).
+        let mut added: BTreeSet<String> = BTreeSet::new();
+
         while let Some(header) = reader.next().await? {
             if header.path.is_empty() {
                 continue;
             }
-            let (parent, name) = match header.path.rfind('/') {
-                Some(i) => (&header.path[..i], &header.path[i + 1..]),
-                None => ("", header.path.as_str()),
-            };
-
-            if whiteouts && name.starts_with(".wh.") {
-                report.removed += self.apply_whiteout(&at(parent), name).await?;
-                continue;
-            }
-
-            let path = at(&header.path);
             let attrs = Attrs {
                 mode: header.mode,
                 uid: header.uid,
                 gid: header.gid,
             };
+            // Checked before anything is looked up or changed: an entry may
+            // not climb out of `dest` (findings f12ada4fdef6, d3df6a641775,
+            // 285fc60e938a).
+            let rel = contained(&header.path)?;
+            if rel.is_empty() {
+                // `.` — the destination itself. Only its attributes mean
+                // anything, and they wait with the other directories'.
+                if header.kind == tar::EntryKind::Directory {
+                    deferred.push((at(""), attrs, header.mtime, header.xattrs.clone()));
+                    report.directories += 1;
+                }
+                continue;
+            }
+            let (parent, name) = match rel.rfind('/') {
+                Some(i) => (&rel[..i], &rel[i + 1..]),
+                None => ("", rel.as_str()),
+            };
+
+            if whiteouts && name.starts_with(".wh.") {
+                report.removed += self.apply_whiteout(&at(parent), name, &added).await?;
+                continue;
+            }
+
+            let path = at(&rel);
+            if whiteouts {
+                added.insert(path.clone());
+            }
 
             // Whatever is being unpacked needs somewhere to go.
             if !parent.is_empty() {
@@ -1034,12 +1090,24 @@ impl<D: BlockDevice> Volume<D> {
                 tar::EntryKind::Symlink => {
                     self.replace(&path).await?;
                     self.symlink(&path, &header.link).await?;
+                    // A symlink's mode is 0777 by convention, but its owner
+                    // is real: `lchown` sets it and quota counts it
+                    // (finding 4d4d5c59ed24).
+                    self.chown(&path, header.uid, header.gid).await?;
                     report.symlinks += 1;
                 }
                 tar::EntryKind::HardLink => {
                     // A link target is a path within the archive, written the
-                    // same way the entry names are.
-                    let target = at(&normalise(&header.link));
+                    // same way the entry names are, and held to the same
+                    // root.
+                    let link = contained(&header.link)?;
+                    if link.is_empty() {
+                        return Err(Error::InvalidPath(format!(
+                            "hard link {} has no target",
+                            header.path
+                        )));
+                    }
+                    let target = at(&link);
                     self.replace(&path).await?;
                     self.link(&target, &path).await?;
                     report.hard_links += 1;
@@ -1064,13 +1132,15 @@ impl<D: BlockDevice> Volume<D> {
                 }
             }
 
-            // A symlink's own attributes are neither settable nor meaningful.
-            // A hard link shares the target's inode, so setting them again
-            // would only overwrite what the target already said. A directory
-            // waits for the deferred pass.
+            // A hard link shares the target's inode, so setting its
+            // attributes again would only overwrite what the target already
+            // said. A directory waits for the deferred pass. A symlink takes
+            // its labels and times like anything else: `security.selinux` on
+            // a link is what a labelled rootfs carries, and nothing here
+            // follows the link to its target.
             if !matches!(
                 header.kind,
-                tar::EntryKind::Symlink | tar::EntryKind::HardLink | tar::EntryKind::Directory
+                tar::EntryKind::HardLink | tar::EntryKind::Directory
             ) {
                 if !header.xattrs.is_empty() {
                     report.xattrs += header.xattrs.len() as u64;
@@ -1106,29 +1176,66 @@ impl<D: BlockDevice> Volume<D> {
     /// there. `.wh.<name>` removes that one name. Anything else beginning
     /// `.wh..wh.` is an aufs bookkeeping file and is dropped rather than
     /// written, which is what every other implementation does with them.
-    async fn apply_whiteout(&mut self, dir: &str, name: &str) -> Result<u64> {
+    ///
+    /// Only what the lower layers left is removed. `added` holds the paths
+    /// this layer has already put down, and they survive a marker that
+    /// arrives after them: the OCI layer format only recommends that markers
+    /// come first, so an archive that lists `d/new` and then
+    /// `d/.wh..wh..opq` still means `d` holds `new` (finding 2f271dfded9e).
+    async fn apply_whiteout(
+        &mut self,
+        dir: &str,
+        name: &str,
+        added: &BTreeSet<String>,
+    ) -> Result<u64> {
         if name == ".wh..wh..opq" {
             if !self.exists(dir).await? {
                 return Ok(0);
             }
-            let mut removed = 0;
-            for entry in self.read_dir(dir).await? {
-                let child = join(dir, &entry.name);
-                self.remove_all(&child).await?;
-                removed += 1;
-            }
-            return Ok(removed);
+            return self.prune_lower(dir, added).await;
         }
         if name.starts_with(".wh..wh.") {
             return Ok(0);
         }
 
-        let victim = join(dir, &name[".wh.".len()..]);
-        if self.exists(&victim).await? {
-            self.remove_all(&victim).await?;
-            return Ok(1);
+        // `.wh.` alone, `.wh..` or `.wh...` would name the directory itself
+        // or its parent.
+        let victim_name = &name[".wh.".len()..];
+        check_name(victim_name)?;
+        let victim = join(dir, victim_name);
+        if added.contains(&victim) || !self.exists(&victim).await? {
+            return Ok(0);
         }
-        Ok(0)
+        if has_added_below(added, &victim) {
+            // This layer put things inside it before hiding it: keep those,
+            // drop what lies beneath them.
+            return self.prune_lower(&victim, added).await;
+        }
+        self.remove_all(&victim).await?;
+        Ok(1)
+    }
+
+    /// Remove everything under `dir` that this layer did not add, keeping
+    /// the directories that lead to what it did.
+    async fn prune_lower(&mut self, dir: &str, added: &BTreeSet<String>) -> Result<u64> {
+        let mut removed = 0;
+        let mut stack = vec![dir.to_string()];
+        while let Some(at) = stack.pop() {
+            for entry in self.read_dir(&at).await? {
+                let child = join(&at, &entry.name);
+                if added.contains(&child) || has_added_below(added, &child) {
+                    // A directory this layer named merges with the one below,
+                    // so what the lower one held under it goes too.
+                    if entry.is_dir {
+                        stack.push(child);
+                    }
+                } else {
+                    self.remove_all(&child).await?;
+                    removed += 1;
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// Remove a name, and everything under it if it is a directory.
@@ -1351,7 +1458,6 @@ impl<D: BlockDevice> Volume<D> {
                     .collect();
                 report.xattrs += header.xattrs.len() as u64;
 
-                let mut data = Vec::new();
                 match stat.mode & mode::IFMT {
                     mode::IFDIR => {
                         header.kind = tar::EntryKind::Directory;
@@ -1363,7 +1469,7 @@ impl<D: BlockDevice> Volume<D> {
                     mode::IFLNK => {
                         header.kind = tar::EntryKind::Symlink;
                         header.link = self.read_link(&path).await?;
-                        header.xattrs.clear();
+                        // Its labels go with it (finding 4d4d5c59ed24).
                         report.symlinks += 1;
                     }
                     mode::IFCHR | mode::IFBLK | mode::IFIFO | mode::IFSOCK => {
@@ -1378,18 +1484,58 @@ impl<D: BlockDevice> Volume<D> {
                         report.devices += 1;
                     }
                     _ => {
-                        data = self.read(&path).await?;
-                        header.size = data.len() as u64;
+                        // Streamed, never gathered: the file costs a buffer,
+                        // not its size, whatever the sink (finding
+                        // f06f9c5e6605).
+                        header.size = stat.size;
+                        writer.start(&header).await?;
+                        self.stream_file(stat.inode, writer).await?;
                         report.files += 1;
-                        report.bytes += data.len() as u64;
+                        report.bytes += stat.size;
+                        continue;
                     }
                 }
 
-                writer.append(&header, &data).await?;
+                writer.append(&header, &[]).await?;
             }
         }
 
         Ok(report)
+    }
+
+    /// Copy a regular file's contents into the entry `writer` has started,
+    /// [`CHUNK`] bytes at a time. A hole reads as zeroes, as it does through
+    /// [`Volume::read`].
+    async fn stream_file<K: tar::Sink>(
+        &self,
+        inum: u32,
+        writer: &mut tar::Writer<K>,
+    ) -> Result<()> {
+        let inode = self.fs.read_inode(inum).await?;
+        let block_size = self.fs.block_size() as u64;
+        let mut out = Vec::with_capacity(CHUNK);
+        let mut left = inode.size;
+        let mut logical = 0u64;
+        while left > 0 {
+            let take = left.min(block_size) as usize;
+            match self.fs.resolve_block(&inode, logical).await? {
+                Some(physical) => {
+                    let buf = self.fs.read_block(physical).await?;
+                    out.extend_from_slice(&buf[..take]);
+                }
+                None => out.resize(out.len() + take, 0),
+            }
+            if out.len() >= CHUNK {
+                writer.write(&out).await?;
+                out.clear();
+            }
+            left -= take as u64;
+            logical += 1;
+        }
+        if !out.is_empty() {
+            writer.write(&out).await?;
+        }
+        Ok(())
     }
 
     /// A directory's names, sorted and reversed, ready to be popped in order.

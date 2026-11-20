@@ -25,6 +25,18 @@
 - **fix:** `i_blocks` keeps the attribute block when a file is rewritten,
   appended, written at an offset or emptied, and when a directory grows or
   its index is rebuilt (#23, 16cc8481732e, abb26904f7ff).
+- **fix:** Archive entries, hard-link targets and whiteout markers whose
+  path holds `..` (or a NUL) are refused before anything changes; `../victim`
+  unpacked into `/sandbox` used to replace `/victim` (#23, f12ada4fdef6,
+  d3df6a641775, 285fc60e938a). A whiteout naming `.` or `..` is refused too.
+- **fix:** OCI whiteouts hide only the lower layers: an entry this layer put
+  down earlier in the same archive survives a later `.wh.<name>` or
+  `.wh..wh..opq` (#23, 2f271dfded9e).
+- **fix:** Symlinks keep their owner, timestamp and extended attributes when
+  unpacked, and their attributes when packed (#23, 4d4d5c59ed24).
+- **perf:** Packing streams each regular file in 64 KiB pieces instead of
+  reading it whole, so memory no longer grows with the largest file (#23,
+  f06f9c5e6605).
 - **docs:** README's dependency snippet takes fio-ext4 v1.8.4 by `rev`
   (dee995d, its release commit).
 

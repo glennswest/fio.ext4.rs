@@ -157,7 +157,13 @@ vol.symlink("/bin", "usr/bin").await?;
 A tar archive can be streamed straight into a filesystem, or read back out of
 one. Everything an image needs survives: modes and the setuid bit, ownership,
 symlinks, hard links, device nodes, timestamps, and extended attributes
-including SELinux labels.
+including SELinux labels — on symlinks too, which keep their owner, time and
+labels both ways.
+
+An archive is untrusted input. An entry, hard-link target or whiteout whose
+path holds a `..` component (or a NUL) is refused with `InvalidPath` before
+anything is looked up or changed, so nothing in an archive reaches outside
+the directory it is unpacked into.
 
 ```rust
 use fio_ext4::archive::{self, PackOptions, UnpackOptions};
@@ -172,7 +178,8 @@ archive::unpack("disk.img", None::<&str>, &UnpackOptions::default()).await?;
 archive::pack("disk.img", Some("backup.tar"), &PackOptions::default()).await?;
 ```
 
-Nothing is held in memory. The stream can be a file, a pipe, a socket, or a
+Nothing is held in memory whole: unpacking holds at most 1 MiB of a file at a
+time, and packing reads each file out 64 KiB at a time. The stream can be a file, a pipe, a socket, or a
 container layer arriving from a registry, and an archive larger than RAM is not
 a problem — which is what makes this usable on a device that does not have much
 of either.
@@ -185,7 +192,9 @@ vol.unpack_tar_layer(tar::Io::new(layer), "/").await?;
 
 That obeys the whiteout markers, so a layer can delete as well as add:
 `.wh.<name>` removes a name from the layers below, and `.wh..wh..opq` hides
-everything already in its directory. A file that replaces one from a lower
+everything already in its directory. A marker hides only what the layers
+below left: entries this layer put down earlier in the same archive survive
+it, whatever order the archive lists them in. A file that replaces one from a lower
 layer gets a fresh inode, so it inherits none of the old mode, owner or labels.
 
 `archive::unpack_into` / `archive::pack_from` do the same against a `Volume`
