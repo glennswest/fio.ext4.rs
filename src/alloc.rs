@@ -37,12 +37,16 @@ impl BitmapCache {
 /// Allocation over a live filesystem.
 pub(crate) struct Allocator {
     pub(crate) cache: BitmapCache,
+    /// Block-bitmap bits examined by every [`Allocator::alloc_block`] so far.
+    /// What a test reads to tell linear allocation from quadratic.
+    pub(crate) bits_scanned: u64,
 }
 
 impl Allocator {
     pub(crate) fn new() -> Self {
         Self {
             cache: BitmapCache::default(),
+            bits_scanned: 0,
         }
     }
 
@@ -106,13 +110,16 @@ impl Allocator {
 
             let bitmap = self.block_bitmap(fs, group).await?;
             let mut found = None;
+            let mut scanned = 0u64;
             for i in (from..in_group).chain(0..from) {
+                scanned += 1;
                 if !Filesystem::<D>::test_bit(bitmap, i) {
                     Filesystem::<D>::set_bit(bitmap, i, true);
                     found = Some(first + i);
                     break;
                 }
             }
+            self.bits_scanned += scanned;
 
             if let Some(block) = found {
                 self.cache.dirty_block.insert(group, true);

@@ -557,3 +557,82 @@ async fn pack_streams_file_contents() {
     }
     assert_clean(&dev, "after packing").await;
 }
+
+// ---- moving an indexed directory (78d76493e7c8, 83c24c7dbb2d) ----
+
+async fn move_indexed(block_size: u32) {
+    let what = format!("ext4 {block_size}");
+    let dev = fresh(Profile::Ext4, block_size, 32 * MIB).await;
+    let names: Vec<String> = (0..400)
+        .map(|i| format!("an-entry-with-a-longish-name-so-the-directory-grows-{i:05}"))
+        .collect();
+    {
+        let mut vol = open(&dev).await;
+        assert!(vol.fs.has_metadata_csum(), "{what}: want checksums on");
+        vol.mkdir("/a").await.unwrap();
+        vol.mkdir("/b").await.unwrap();
+        vol.mkdir("/a/big").await.unwrap();
+        for n in &names {
+            vol.write(&format!("/a/big/{n}"), n.as_bytes()).await.unwrap();
+        }
+        let big = vol.lookup("/a/big").await.unwrap();
+        let inode = vol.fs.read_inode(big).await.unwrap();
+        assert!(vol.is_indexed(&inode), "{what}: the directory never became indexed");
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, &format!("{what}: before the move")).await;
+    {
+        let mut vol = open(&dev).await;
+        vol.rename("/a/big", "/b/big").await.unwrap();
+        assert!(!vol.exists("/a/big").await.unwrap());
+        assert_eq!(
+            vol.lookup("/b/big/..").await.unwrap(),
+            vol.lookup("/b").await.unwrap(),
+            "{what}: .. still names the old parent"
+        );
+        assert_eq!(vol.stat("/a").await.unwrap().links, 2, "{what}: old parent's links");
+        assert_eq!(vol.stat("/b").await.unwrap().links, 3, "{what}: new parent's links");
+        for n in names.iter().step_by(37) {
+            assert_eq!(vol.read(&format!("/b/big/{n}")).await.unwrap(), n.as_bytes());
+        }
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, &format!("{what}: after the move")).await;
+}
+
+#[tokio::test]
+async fn an_indexed_directory_moves_between_parents_4k() {
+    move_indexed(4096).await;
+}
+
+#[tokio::test]
+async fn an_indexed_directory_moves_between_parents_1k() {
+    move_indexed(1024).await;
+}
+
+// ---- allocation goal (402731625099) ----
+
+/// Writing a file allocates each block next to the last, without re-walking
+/// the bits already taken — linear, across a block-group boundary too.
+#[tokio::test]
+async fn ordinary_writes_allocate_in_linear_time() {
+    let dev = fresh(Profile::Ext4, 1024, 32 * MIB).await;
+    // 10,000 blocks of 1 KiB: past the 8,192-block first group.
+    let blocks = 10_000u64;
+    let data: Vec<u8> = (0..blocks as usize * 1024).map(|i| (i % 249) as u8).collect();
+    {
+        let mut vol = open(&dev).await;
+        let before = vol.alloc.bits_scanned;
+        vol.write("/big", &data).await.unwrap();
+        let scanned = vol.alloc.bits_scanned - before;
+        // Once per block, plus a pass over each group's metadata and the
+        // journal — not the ~50 million a fixed goal costs.
+        assert!(
+            scanned < blocks + 4 * 8192,
+            "{scanned} bits scanned for {blocks} blocks: allocation is not linear"
+        );
+        assert_eq!(vol.read("/big").await.unwrap(), data);
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after a large ordinary write").await;
+}

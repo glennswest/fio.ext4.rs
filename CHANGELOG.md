@@ -37,6 +37,14 @@
 - **perf:** Packing streams each regular file in 64 KiB pieces instead of
   reading it whole, so memory no longer grows with the largest file (#23,
   f06f9c5e6605).
+- **fix:** Moving a hash-indexed directory to another parent rewrites `..`
+  in its htree root and restamps the root's index checksum; it used to fail
+  decoding the root after the name had already moved, leaving `..` and both
+  parents' link counts wrong (#23, 78d76493e7c8, 83c24c7dbb2d). Where `..`
+  is, is settled before any name moves.
+- **perf:** `write`, `append` and `write_at` advance the allocation goal block
+  by block, so a file's allocation is linear rather than quadratic in its
+  length (#23, 402731625099).
 - **docs:** README's dependency snippet takes fio-ext4 v1.8.4 by `rev`
   (dee995d, its release commit).
 

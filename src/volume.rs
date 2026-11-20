@@ -11,6 +11,7 @@ use mkfs_ext4::cache::CachedDevice;
 use mkfs_ext4::device::BlockDevice;
 use mkfs_ext4::fs::Filesystem;
 use mkfs_ext4::structs::dirent::{self, DirEntry};
+use mkfs_ext4::structs::htree;
 use mkfs_ext4::structs::inode::{mode, Inode};
 use mkfs_ext4::structs::xattr::{self, Xattr};
 use mkfs_ext4::structs::superblock::ino;
@@ -670,6 +671,17 @@ impl<D: BlockDevice> Volume<D> {
             )));
         }
 
+        // A directory moving between parents takes its ".." along. Where
+        // that entry is, and that it can be rewritten, is settled now —
+        // before any name moves — so a directory this cannot handle fails
+        // the rename instead of leaving it half done (findings 78d76493e7c8,
+        // 83c24c7dbb2d).
+        let dotdot = if is_dir && from_parent != to_parent {
+            Some(self.find_dotdot(inum).await?)
+        } else {
+            None
+        };
+
         // Clear the destination if something is already there.
         if let Some(existing) = self.fs.resolve_path(to).await? {
             if existing != inum {
@@ -704,8 +716,8 @@ impl<D: BlockDevice> Volume<D> {
 
         // A directory carries a link to its parent through "..", so moving one
         // between directories moves that link too.
-        if is_dir && from_parent != to_parent {
-            self.repoint_dotdot(inum, to_parent).await?;
+        if let Some(slot) = dotdot {
+            self.write_dotdot(inum, slot, to_parent).await?;
 
             let mut old = self.fs.read_inode(from_parent).await?;
             old.links_count = old.links_count.saturating_sub(1);
@@ -769,17 +781,45 @@ impl<D: BlockDevice> Volume<D> {
         Ok(false)
     }
 
-    /// Point a directory's ".." at a new parent.
-    async fn repoint_dotdot(&mut self, dir_ino: u32, new_parent: u32) -> Result<()> {
-        let with_tail = self.fs.has_metadata_csum();
+    /// Where a directory's ".." entry is: its block, the entry's offset in
+    /// it, and whether that block is an index root.
+    ///
+    /// An indexed directory keeps ".." in its htree root, whose record runs
+    /// on past where an ordinary block stops for its checksum tail, so it is
+    /// not walked as one: the entry sits at a fixed place after ".", and the
+    /// block is summed as an index block, not a directory block.
+    async fn find_dotdot(&self, dir_ino: u32) -> Result<(u64, usize, bool)> {
         let dir_inode = self.fs.read_inode(dir_ino).await?;
-        let list = map::read_block_list(&self.fs, &dir_inode).await?;
+        let block_size = self.fs.block_size() as usize;
 
+        if self.is_indexed(&dir_inode) {
+            let root = self
+                .fs
+                .resolve_block(&dir_inode, 0)
+                .await?
+                .ok_or_else(|| Error::Unsupported("an indexed directory with no root block".into()))?;
+            let buf = self.fs.read_block(root).await?;
+            // "." is 12 bytes; ".." follows it.
+            const DOTDOT_AT: usize = 12;
+            let is_root = htree::count_offset(&buf, block_size) == Some(htree::ROOT_COUNT_OFFSET);
+            let dot_len = mkfs_ext4::bytes::get_u16(&buf, 4) as usize;
+            let name_len = buf[DOTDOT_AT + 6] as usize;
+            let name = &buf[DOTDOT_AT + 8..DOTDOT_AT + 8 + 2];
+            if !is_root || dot_len != DOTDOT_AT || name_len != 2 || name != b".." {
+                return Err(Error::Unsupported(format!(
+                    "directory inode {dir_ino} is indexed but its first block is not an index root"
+                )));
+            }
+            return Ok((root, DOTDOT_AT, true));
+        }
+
+        let with_tail = self.fs.has_metadata_csum();
+        let list = map::read_block_list(&self.fs, &dir_inode).await?;
         for &block in &list {
             if block == map::HOLE {
                 continue;
             }
-            let mut buf = self.fs.read_block(block).await?;
+            let buf = self.fs.read_block(block).await?;
             let limit = buf.len() - if with_tail { dirent::TAIL_LEN } else { 0 };
             let mut at = 0usize;
             while at + dirent::ENTRY_HEADER_LEN <= limit {
@@ -788,18 +828,43 @@ impl<D: BlockDevice> Volume<D> {
                     break;
                 }
                 if entry.name == b".." {
-                    mkfs_ext4::bytes::put_u32(&mut buf, at, new_parent);
-                    self.fs
-                        .stamp_dir_block(&mut buf, dir_ino, dir_inode.generation);
-                    self.fs.write_block(block, &buf).await?;
-                    return Ok(());
+                    return Ok((block, at, false));
                 }
                 at += entry.rec_len as usize;
             }
         }
-        Ok(())
+        Err(Error::Unsupported(format!("directory inode {dir_ino} has no \"..\" entry")))
     }
 
+    /// Point the ".." found by [`Volume::find_dotdot`] at a new parent, and
+    /// restamp its block the way that kind of block is summed.
+    async fn write_dotdot(
+        &mut self,
+        dir_ino: u32,
+        (block, at, index_root): (u64, usize, bool),
+        new_parent: u32,
+    ) -> Result<()> {
+        let generation = self.fs.read_inode(dir_ino).await?.generation;
+        let mut buf = self.fs.read_block(block).await?;
+        mkfs_ext4::bytes::put_u32(&mut buf, at, new_parent);
+        if index_root {
+            if self.fs.has_metadata_csum() {
+                let block_size = self.fs.block_size() as usize;
+                htree::stamp_csum(
+                    &mut buf,
+                    block_size,
+                    self.fs.csum_seed(),
+                    dir_ino,
+                    generation,
+                    htree::ROOT_COUNT_OFFSET,
+                );
+            }
+        } else {
+            self.fs.stamp_dir_block(&mut buf, dir_ino, generation);
+        }
+        self.fs.write_block(block, &buf).await?;
+        Ok(())
+    }
 
     /// Read one extended attribute.
     pub async fn get_xattr(&self, path: &str, name: &str) -> Result<Option<Vec<u8>>> {
@@ -1753,10 +1818,13 @@ impl<D: BlockDevice> Volume<D> {
             }
             prev = *slot;
         }
-        // And take what is missing.
-        let goal = list.last().copied().unwrap_or(0);
+        // And take what is missing, each block's goal the one after the
+        // last: a goal that stays put has every allocation re-walk the bits
+        // already taken, quadratic in the file (finding 402731625099).
+        let mut goal = list.last().map_or(0, |b| b + 1);
         while (list.len() as u64) < needed {
             let block = self.alloc.alloc_block(&mut self.fs, goal).await?;
+            goal = block + 1;
             list.push(block);
         }
 
