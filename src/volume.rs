@@ -394,9 +394,7 @@ impl<D: BlockDevice> Volume<D> {
         let inum = match existing {
             Some(inum) => {
                 let inode = self.fs.read_inode(inum).await?;
-                if inode.is_dir() {
-                    return Err(Error::IsADirectory(path.into()));
-                }
+                require_regular(&inode, path)?;
                 self.truncate_inode(inum).await?;
                 inum
             }
@@ -426,9 +424,7 @@ impl<D: BlockDevice> Volume<D> {
             }
             Some(inum) => {
                 let inode = self.fs.read_inode(inum).await?;
-                if inode.is_dir() {
-                    return Err(Error::IsADirectory(path.into()));
-                }
+                require_regular(&inode, path)?;
                 let mut whole = self.fs.read_file(&inode).await?;
                 whole.extend_from_slice(data);
                 self.write_data(inum, &whole).await
@@ -622,9 +618,9 @@ impl<D: BlockDevice> Volume<D> {
     /// Replacing an existing name is allowed for files, as it is on any unix
     /// filesystem; replacing a non-empty directory is not.
     pub async fn rename(&mut self, from: &str, to: &str) -> Result<()> {
-        let inum = self.lookup(from).await?;
         let (from_parent_path, from_name) = split_path(from)?;
         let (to_parent_path, to_name) = split_path(to)?;
+        let inum = self.lookup(from).await?;
         let from_parent = self.lookup(&from_parent_path).await?;
         let to_parent = self.lookup(&to_parent_path).await?;
 
@@ -643,6 +639,17 @@ impl<D: BlockDevice> Volume<D> {
         if let Some(existing) = self.fs.resolve_path(to).await? {
             if existing != inum {
                 let target = self.fs.read_inode(existing).await?;
+                // rename(2)'s EISDIR and ENOTDIR: a directory replaces only a
+                // directory, and anything else only a non-directory. Without
+                // this the destination was removed whatever it was, so
+                // renaming a directory onto a file deleted the file
+                // (finding ed975422b071).
+                if target.is_dir() && !is_dir {
+                    return Err(Error::IsADirectory(to.into()));
+                }
+                if !target.is_dir() && is_dir {
+                    return Err(Error::NotADirectory(to.into()));
+                }
                 if target.is_dir() {
                     let entries = self.fs.read_dir(&target).await?;
                     if !dir::is_empty(&entries) {
@@ -694,9 +701,7 @@ impl<D: BlockDevice> Volume<D> {
             None => self.write_with(path, &[], &Attrs::default()).await?,
         };
         let inode = self.fs.read_inode(inum).await?;
-        if inode.is_dir() {
-            return Err(Error::IsADirectory(path.into()));
-        }
+        require_regular(&inode, path)?;
 
         // Read, splice, write back. Whole-file rewrite is the honest
         // implementation until a block-granular path is worth the complexity;
@@ -1431,6 +1436,17 @@ impl<D: BlockDevice> Volume<D> {
     /// costing no blocks at all. Longer targets take a block.
     pub async fn symlink(&mut self, path: &str, target: &str) -> Result<u32> {
         let (parent_path, name) = split_path(path)?;
+        // Checked before anything is allocated: a target longer than one
+        // block used to panic copying into it, with the inode and block
+        // already taken (finding f737f3d6e9e4).
+        let max = max_symlink_len(self.fs.block_size());
+        if target.is_empty() || target.len() > max || target.contains('\0') {
+            return Err(Error::InvalidPath(format!(
+                "symlink target for {path} must be 1 to {max} bytes with no NUL, \
+                 not {} bytes",
+                target.len()
+            )));
+        }
         let parent_ino = self.lookup(&parent_path).await?;
         {
             let parent = self.fs.read_inode(parent_ino).await?;
@@ -1776,6 +1792,18 @@ impl<D: BlockDevice> Drop for Volume<D> {
 }
 
 /// Split a path into its parent and its final component.
+///
+/// Every operation that adds, removes or moves a name goes through here, so
+/// this is where a name that must never be one is refused — before anything
+/// is looked up, allocated or unlinked:
+///
+/// - `.` and `..` are the directory's own structure. `rmdir("/d/.")` would
+///   otherwise resolve parent and target both to `d`, take out its own `.`
+///   and free it while `/d` still names it (findings 3235dae01a21,
+///   48f2ceb27e92).
+/// - a NUL cannot be stored in a name a C reader can find.
+/// - a name over 255 bytes does not fit a directory entry; refused here, it
+///   costs nothing, where refused at link time an inode was already taken.
 fn split_path(path: &str) -> Result<(String, String)> {
     let trimmed = path.trim_end_matches('/');
     let (parent, name) = match trimmed.rfind('/') {
@@ -1786,7 +1814,48 @@ fn split_path(path: &str) -> Result<(String, String)> {
     if name.is_empty() {
         return Err(Error::InvalidPath(path.into()));
     }
+    check_name(name)?;
     Ok((parent.to_string(), name.to_string()))
+}
+
+/// Refuse a data write to anything but a regular file.
+///
+/// A symlink's target, or a device's number, lives in `i_block` where a
+/// regular file keeps its block map; writing file data there replaces one
+/// with the other and leaves an inode whose type no longer describes it
+/// (findings 9534db6f345d, 978776e2fe03). Symlinks are not followed here,
+/// as nothing in this crate follows them.
+fn require_regular(inode: &Inode, path: &str) -> Result<()> {
+    if inode.is_dir() {
+        return Err(Error::IsADirectory(path.into()));
+    }
+    if inode.mode & mode::IFMT != mode::IFREG {
+        return Err(Error::InvalidPath(format!("{path} is not a regular file")));
+    }
+    Ok(())
+}
+
+/// Whether `name` can be a directory entry this crate adds or removes.
+fn check_name(name: &str) -> Result<()> {
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.len() > dirent::NAME_LEN_MAX
+        || name.contains('\0')
+        || name.contains('/')
+    {
+        return Err(Error::InvalidName(name.into()));
+    }
+    Ok(())
+}
+
+/// The longest symlink target this filesystem stores.
+///
+/// The kernel's `ext4_symlink` refuses a target whose length with its NUL
+/// exceeds the block size, and the VFS one past `PATH_MAX` (4096 with the
+/// NUL); a longer one has nowhere to go in a single-block symlink.
+fn max_symlink_len(block_size: u32) -> usize {
+    (block_size as usize).min(4096) - 1
 }
 
 /// Seconds since the epoch, or zero if the clock is before it.

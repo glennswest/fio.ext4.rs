@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### 2026-11-20
+- **fix:** Names that must never change are refused before anything is
+  allocated (#23, findings 3235dae01a21, 48f2ceb27e92): a final `.` or `..`,
+  a NUL, a name over 255 bytes. `rmdir("/d/.")` used to free `d` while `/d`
+  still named it.
+- **fix:** `rename` refuses a directory onto a non-directory
+  (`NotADirectory`) and a non-directory onto a directory (`IsADirectory`)
+  instead of deleting the destination (#23, ed975422b071).
+- **fix:** `write`, `write_with`, `append` and `write_at` refuse anything but
+  a regular file; they used to overwrite a symlink's target or a device's
+  number with a block map (#23, 9534db6f345d, 978776e2fe03).
+- **fix:** `symlink` refuses an empty target, a NUL, or one longer than
+  `min(block size, 4096) - 1` bytes before allocating; a target over one
+  block used to panic with the inode and block already taken (#23,
+  f737f3d6e9e4).
 - **docs:** README's dependency snippet takes fio-ext4 v1.8.4 by `rev`
   (dee995d, its release commit).
 

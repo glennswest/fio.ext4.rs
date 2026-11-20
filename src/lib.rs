@@ -66,6 +66,9 @@ pub mod archive;
 pub mod error;
 pub mod volume;
 
+#[cfg(test)]
+mod review_tests;
+
 pub use error::{Error, Result};
 pub use mkfs_ext4::cache::{CacheStats, CachedDevice};
 pub use mkfs_ext4::structs::xattr::Xattr;
