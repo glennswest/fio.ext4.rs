@@ -1037,7 +1037,9 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Unpack a tar archive from a stream, rooted at `dest` rather than `/`.
     ///
-    /// `dest` is created if it does not exist.
+    /// `dest` is created if it does not exist. Nothing in the archive reaches
+    /// outside it: an entry or hard-link target with a `..` component is
+    /// refused with [`Error::InvalidPath`].
     pub async fn unpack_tar_into<S: tar::Source>(
         &mut self,
         src: S,
@@ -1053,9 +1055,10 @@ impl<D: BlockDevice> Volume<D> {
     /// in its directory. Neither marker is itself created. Unpack layers in
     /// order and the result is the image's filesystem.
     ///
-    /// The markers are obeyed as they arrive, which is the point in the stream
-    /// where every layer format places them: after the directory's own entry
-    /// and before its new contents.
+    /// The markers are obeyed as they arrive, and hide only what the layers
+    /// below left: an entry this layer put down earlier in the archive
+    /// survives a marker that follows it. Layer formats place markers first,
+    /// but the OCI format only recommends it.
     pub async fn unpack_tar_layer<S: tar::Source>(
         &mut self,
         src: S,
