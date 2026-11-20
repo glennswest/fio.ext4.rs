@@ -651,6 +651,7 @@ fn be32(buf: &[u8], at: usize) -> u32 {
 /// and before the checkpoint leaves. No checksums, 32-bit tags — the
 /// simplest log JBD2 writes.
 async fn leave_unreplayed(dev: &MemDevice, home: u64, data: &[u8], jbd2_incompat: u32) {
+    use mkfs_ext4::device::BlockDevice;
     use mkfs_ext4::journal::{off, JBD2_MAGIC};
     use mkfs_ext4::structs::superblock::ino;
 
@@ -736,11 +737,14 @@ async fn a_journal_that_cannot_be_replayed_is_refused() {
     }
     // fast_commit: a separate replay protocol, not done here.
     leave_unreplayed(&dev, home, &[b'n'; 4096], 0x20).await;
-    match Volume::open(&dev).await {
+    // Bound first: a match on it as the block's tail would keep the
+    // borrow of `dev` alive past `dev` itself.
+    let opened = Volume::open(&dev).await;
+    match opened {
         Err(Error::Unsupported(why)) => assert!(why.contains("recovery"), "{why}"),
         Err(e) => panic!("wrong error: {e}"),
         Ok(_) => panic!("opened for writing over an unreplayed journal"),
-    }
+    };
 }
 
 #[tokio::test]
