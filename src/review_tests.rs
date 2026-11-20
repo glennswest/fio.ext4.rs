@@ -6,10 +6,12 @@
 //! the crate's own handles on the filesystem. Each case ends with a forced
 //! fsck, as every test here does.
 
+use mkfs_ext4::bytes::{get_u32, put_u32};
 use mkfs_ext4::device::MemDevice;
 use mkfs_ext4::format::format;
 use mkfs_ext4::fsck::{self, CheckScope, FsckOptions};
 use mkfs_ext4::params::{Params, Profile};
+use mkfs_ext4::structs::xattr;
 
 use crate::error::Error;
 use crate::volume::{Special, Volume};
@@ -181,4 +183,175 @@ async fn symlink_targets_are_bounded_before_allocating_1k() {
 #[tokio::test]
 async fn symlink_targets_are_bounded_before_allocating_4k() {
     symlink_limits(4096).await;
+}
+
+// ---- shared attribute blocks (12afcde622bc) ----
+
+/// Point `path`'s inode at attribute block `block`, as the kernel does when
+/// two inodes carry the same attribute set.
+async fn share_xattr_block(vol: &mut Volume<&MemDevice>, path: &str, block: u64) {
+    let inum = vol.lookup(path).await.unwrap();
+    let mut inode = vol.fs.read_inode(inum).await.unwrap();
+    assert_eq!(inode.file_acl, 0);
+    inode.file_acl = block;
+    inode.blocks += vol.fs.block_size() as u64 / 512;
+    vol.fs.write_inode(inum, &inode).await.unwrap();
+}
+
+async fn set_refcount(vol: &Volume<&MemDevice>, block: u64, refs: u32) {
+    let mut buf = vol.fs.read_block(block).await.unwrap();
+    put_u32(&mut buf, xattr::block_off::H_REFCOUNT, refs);
+    if vol.fs.has_metadata_csum() {
+        xattr::stamp_block_csum(&mut buf, vol.fs.csum_seed(), block);
+    }
+    vol.fs.write_block(block, &buf).await.unwrap();
+}
+
+async fn refcount(vol: &Volume<&MemDevice>, block: u64) -> u32 {
+    get_u32(&vol.fs.read_block(block).await.unwrap(), xattr::block_off::H_REFCOUNT)
+}
+
+async fn file_acl(vol: &Volume<&MemDevice>, path: &str) -> u64 {
+    let inum = vol.lookup(path).await.unwrap();
+    vol.fs.read_inode(inum).await.unwrap().file_acl
+}
+
+async fn names(vol: &Volume<&MemDevice>, path: &str) -> Vec<(String, Vec<u8>)> {
+    let mut out: Vec<_> = vol
+        .list_xattrs(path)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|x| (x.name, x.value))
+        .collect();
+    out.sort();
+    out
+}
+
+#[tokio::test]
+async fn a_shared_attribute_block_is_cloned_and_counted_down() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    // Too big for the inode, so it spills into a block.
+    let label = vec![b'L'; 300];
+    let shared;
+    {
+        let mut vol = open(&dev).await;
+        for p in ["/a", "/b", "/c"] {
+            vol.write(p, p.as_bytes()).await.unwrap();
+        }
+        vol.set_xattr("/a", "user.big", &label).await.unwrap();
+        shared = file_acl(&vol, "/a").await;
+        assert_ne!(shared, 0, "the attribute did not spill");
+        share_xattr_block(&mut vol, "/b", shared).await;
+        share_xattr_block(&mut vol, "/c", shared).await;
+        set_refcount(&vol, shared, 3).await;
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "three inodes sharing one block").await;
+
+    let only_label = vec![("user.big".to_string(), label.clone())];
+    {
+        let mut vol = open(&dev).await;
+        // Changing b's set gives b its own block; a and c keep theirs.
+        vol.set_xattr("/b", "user.more", &[b'M'; 200]).await.unwrap();
+        assert_ne!(file_acl(&vol, "/b").await, shared, "b rewrote the shared block");
+        assert_eq!(refcount(&vol, shared).await, 2);
+        assert_eq!(names(&vol, "/a").await, only_label, "a's attributes changed");
+        assert_eq!(names(&vol, "/c").await, only_label, "c's attributes changed");
+        assert_eq!(names(&vol, "/b").await.len(), 2);
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after cloning for b").await;
+
+    {
+        let mut vol = open(&dev).await;
+        // Deleting c drops its reference; the block stays for a.
+        vol.unlink("/c").await.unwrap();
+        assert_eq!(refcount(&vol, shared).await, 1);
+        assert_eq!(names(&vol, "/a").await, only_label);
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after unlinking c").await;
+
+    {
+        let mut vol = open(&dev).await;
+        let (blocks_before, _) = free(&vol);
+        // The last reference: moving a's set inline frees the block.
+        vol.remove_xattr("/a", "user.big").await.unwrap();
+        assert_eq!(file_acl(&vol, "/a").await, 0);
+        assert_eq!(free(&vol).0, blocks_before + 1, "the last reference did not free");
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after the last reference").await;
+}
+
+#[tokio::test]
+async fn removing_a_shared_set_inline_counts_down_without_freeing() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    let shared;
+    {
+        let mut vol = open(&dev).await;
+        vol.write("/a", b"a").await.unwrap();
+        vol.write("/b", b"b").await.unwrap();
+        vol.set_xattr("/a", "user.big", &[b'L'; 300]).await.unwrap();
+        shared = file_acl(&vol, "/a").await;
+        share_xattr_block(&mut vol, "/b", shared).await;
+        set_refcount(&vol, shared, 2).await;
+        let (blocks_before, _) = free(&vol);
+        vol.remove_xattr("/b", "user.big").await.unwrap();
+        assert_eq!(free(&vol).0, blocks_before, "a shared block was freed");
+        assert_eq!(refcount(&vol, shared).await, 1);
+        assert_eq!(vol.get_xattr("/a", "user.big").await.unwrap().unwrap(), vec![b'L'; 300]);
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after b dropped its share").await;
+}
+
+// ---- i_blocks keeps the attribute block (16cc8481732e, abb26904f7ff) ----
+
+async fn spilled_rewrites(profile: Profile, block_size: u32) {
+    let what = format!("{profile:?} {block_size}");
+    let dev = fresh(profile, block_size, 32 * MIB).await;
+    let bs = block_size as u64;
+    let sectors = bs / 512;
+    {
+        let mut vol = open(&dev).await;
+        vol.write("/f", &[1u8; 3000]).await.unwrap();
+        vol.set_xattr("/f", "user.big", &[b'L'; 300]).await.unwrap();
+        assert_ne!(file_acl(&vol, "/f").await, 0, "{what}: did not spill");
+
+        vol.write("/f", &[2u8; 5000]).await.unwrap();
+        let data = 5000u64.div_ceil(bs);
+        let stat = vol.stat("/f").await.unwrap();
+        // Only ext2's indirect map can need a block of its own here, and
+        // 5000 bytes stay within the direct pointers.
+        assert_eq!(stat.blocks, (data + 1) * sectors, "{what}: rewrite");
+        vol.append("/f", b"tail").await.unwrap();
+        vol.write_at("/f", 10, b"mid").await.unwrap();
+        vol.write("/f", b"").await.unwrap();
+        assert_eq!(vol.stat("/f").await.unwrap().blocks, sectors, "{what}: emptied");
+        vol.write("/f", &[3u8; 100]).await.unwrap();
+
+        // A directory with a spilled label, grown past one block: the
+        // conversion to an index and its rebuilds recompute `i_blocks` too.
+        vol.mkdir("/d").await.unwrap();
+        vol.set_xattr("/d", "user.big", &[b'D'; 300]).await.unwrap();
+        for i in 0..200 {
+            vol.write(&format!("/d/a-rather-long-name-to-fill-blocks-{i:04}"), b"x")
+                .await
+                .unwrap();
+        }
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, &format!("{what}: rewrites with a spilled attribute")).await;
+}
+
+#[tokio::test]
+async fn rewrites_keep_the_attribute_block_in_i_blocks_ext4() {
+    spilled_rewrites(Profile::Ext4, 4096).await;
+}
+
+#[tokio::test]
+async fn rewrites_keep_the_attribute_block_in_i_blocks_ext2() {
+    spilled_rewrites(Profile::Ext2, 1024).await;
 }

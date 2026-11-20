@@ -363,7 +363,8 @@ impl<D: BlockDevice> Volume<D> {
             .await?;
         dir_inode.flags |= iflags::INDEX;
         dir_inode.size = list.len() as u64 * block_size;
-        dir_inode.blocks = (list.len() as u64 + meta) * (block_size / 512);
+        dir_inode.blocks =
+            (list.len() as u64 + meta) * (block_size / 512) + self.acl_sectors(dir_inode);
         dir_inode.mtime = self.now;
         dir_inode.ctime = self.now;
         self.fs.write_inode(dir_ino, dir_inode).await?;

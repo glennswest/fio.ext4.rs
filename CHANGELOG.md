@@ -17,6 +17,14 @@
   `min(block size, 4096) - 1` bytes before allocating; a target over one
   block used to panic with the inode and block already taken (#23,
   f737f3d6e9e4).
+- **fix:** A shared extended-attribute block (`h_refcount` > 1, as the
+  kernel leaves identical sets) is honoured: changing one inode's set gives
+  it a block of its own, and dropping a reference counts the block down and
+  frees it only at the last (#23, 12afcde622bc). It used to be rewritten
+  for every sharer, or freed under them.
+- **fix:** `i_blocks` keeps the attribute block when a file is rewritten,
+  appended, written at an offset or emptied, and when a directory grows or
+  its index is rebuilt (#23, 16cc8481732e, abb26904f7ff).
 - **docs:** README's dependency snippet takes fio-ext4 v1.8.4 by `rev`
   (dee995d, its release commit).
 

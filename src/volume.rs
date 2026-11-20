@@ -847,20 +847,34 @@ impl<D: BlockDevice> Volume<D> {
 
         let mut inode = self.fs.read_inode(inum).await?;
         let old_block = inode.file_acl;
+        let sectors = sb.block_size() as u64 / 512;
 
+        // An attribute block can be shared: the kernel gives inodes with
+        // identical attribute sets one block and counts them in its
+        // `h_refcount`. Only a block this inode holds alone is rewritten in
+        // place or freed; a shared one is the other inodes' too, so this
+        // inode takes a block of its own and drops its reference to the old
+        // (finding 12afcde622bc, after `ext4_xattr_block_set`).
         if inline_ok {
             if old_block != 0 {
-                self.alloc.free_block(&mut self.fs, old_block).await?;
+                self.release_xattr_block(old_block).await?;
                 inode.file_acl = 0;
-                inode.blocks = inode.blocks.saturating_sub(sb.block_size() as u64 / 512);
+                inode.blocks = inode.blocks.saturating_sub(sectors);
             }
         } else {
-            let block = if old_block != 0 {
+            let sole = old_block != 0 && self.xattr_refcount(old_block).await? <= 1;
+            let block = if sole {
                 old_block
             } else {
+                // Allocated before the old reference is dropped, so running
+                // out of space leaves the inode as it was.
                 let b = self.alloc.alloc_block(&mut self.fs, 0).await?;
+                if old_block != 0 {
+                    self.release_xattr_block(old_block).await?;
+                } else {
+                    inode.blocks += sectors;
+                }
                 inode.file_acl = b;
-                inode.blocks += sb.block_size() as u64 / 512;
                 b
             };
             let mut buf = xattr::write_block_xattrs(sb.block_size() as usize, attrs)?;
@@ -1220,7 +1234,8 @@ impl<D: BlockDevice> Volume<D> {
         let meta =
             map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &list).await?;
         inode.size = size;
-        inode.blocks = (list.len() as u64 + meta) * (block_size as u64 / 512);
+        inode.blocks =
+            (list.len() as u64 + meta) * (block_size as u64 / 512) + self.acl_sectors(&inode);
         inode.mtime = self.now;
         inode.ctime = self.now;
         self.fs.write_inode(inum, &inode).await?;
@@ -1620,7 +1635,7 @@ impl<D: BlockDevice> Volume<D> {
         .await?;
 
         inode.size = data.len() as u64;
-        inode.blocks = (list.len() as u64 + meta) * (block_size / 512);
+        inode.blocks = (list.len() as u64 + meta) * (block_size / 512) + self.acl_sectors(&inode);
         inode.mtime = self.now;
         inode.ctime = self.now;
         self.fs.write_inode(inum, &inode).await?;
@@ -1639,13 +1654,57 @@ impl<D: BlockDevice> Volume<D> {
         if inode.file_acl == 0 {
             return Ok(());
         }
-        self.alloc.free_block(&mut self.fs, inode.file_acl).await?;
+        self.release_xattr_block(inode.file_acl).await?;
         inode.blocks = inode
             .blocks
             .saturating_sub(self.fs.superblock().block_size() as u64 / 512);
         inode.file_acl = 0;
         self.fs.write_inode(inum, &inode).await?;
         Ok(())
+    }
+
+    /// How many inodes share an attribute block, from its header.
+    ///
+    /// The block is validated first: a pointer to something that is not an
+    /// attribute block is corruption, and nothing is freed or rewritten on
+    /// the strength of it.
+    async fn xattr_refcount(&self, block: u64) -> Result<u32> {
+        let buf = self.fs.read_block(block).await?;
+        xattr::read_block_xattrs(&buf)?;
+        Ok(mkfs_ext4::bytes::get_u32(&buf, xattr::block_off::H_REFCOUNT))
+    }
+
+    /// Drop one inode's reference to an attribute block: free it if that was
+    /// the last, otherwise count one fewer and restamp its checksum — the
+    /// count is inside the summed bytes (`ext4_xattr_release_block`).
+    async fn release_xattr_block(&mut self, block: u64) -> Result<()> {
+        let mut buf = self.fs.read_block(block).await?;
+        xattr::read_block_xattrs(&buf)?;
+        let refs = mkfs_ext4::bytes::get_u32(&buf, xattr::block_off::H_REFCOUNT);
+        if refs > 1 {
+            mkfs_ext4::bytes::put_u32(&mut buf, xattr::block_off::H_REFCOUNT, refs - 1);
+            if self.fs.has_metadata_csum() {
+                xattr::stamp_block_csum(&mut buf, self.fs.csum_seed(), block);
+            }
+            self.fs.write_block(block, &buf).await?;
+        } else {
+            self.alloc.free_block(&mut self.fs, block).await?;
+        }
+        Ok(())
+    }
+
+    /// The 512-byte sectors an inode's attribute block adds to `i_blocks`.
+    ///
+    /// `i_blocks` counts every block an inode holds, its attribute block
+    /// included. Every place that recomputes it from the block map adds this
+    /// back, or a file with a spilled label is miscounted the moment its
+    /// contents change (findings 16cc8481732e, abb26904f7ff).
+    pub(crate) fn acl_sectors(&self, inode: &Inode) -> u64 {
+        if inode.file_acl != 0 {
+            self.fs.block_size() as u64 / 512
+        } else {
+            0
+        }
     }
 
     async fn truncate_inode(&mut self, inum: u32) -> Result<()> {
@@ -1665,7 +1724,8 @@ impl<D: BlockDevice> Volume<D> {
             inode.block = mkfs_ext4::structs::extent::build_inline(&[])?;
         }
         inode.size = 0;
-        inode.blocks = 0;
+        // The attribute block is not data, and stays.
+        inode.blocks = self.acl_sectors(&inode);
         inode.mtime = self.now;
         inode.ctime = self.now;
         self.fs.write_inode(inum, &inode).await?;
@@ -1737,7 +1797,8 @@ impl<D: BlockDevice> Volume<D> {
         )
         .await?;
         dir_inode.size = list.len() as u64 * block_size;
-        dir_inode.blocks = (list.len() as u64 + meta) * (block_size / 512);
+        dir_inode.blocks =
+            (list.len() as u64 + meta) * (block_size / 512) + self.acl_sectors(&dir_inode);
         dir_inode.mtime = self.now;
         dir_inode.ctime = self.now;
         self.fs.write_inode(dir_ino, &dir_inode).await?;
