@@ -166,6 +166,29 @@ too, the finding is about the reader.
       29dcaa7 build, every test, clippy `-D warnings` clean. Negative
       control (fix reverted, f9367c1): all three fail, fsck finds `i_blocks`
       wrong after the append. Released as fio-ext4 **v1.8.4**.
+- [ ] Issue #23 (P1) — 20 review findings in `src/volume.rs`, 14 distinct
+      (duplicates share a fix). `1d4c68f8df40` is #20's hole fix, already on
+      main. The rest, one commit per group, each naming its finding ids, unit
+      tests in `src/review_tests.rs` ending in a forced fsck:
+      1. names: `split_path` refuses `.`/`..`/NUL/overlong basenames before
+         anything allocates (3235dae01a21, 48f2ceb27e92); rename refuses a
+         dir↔non-dir replacement (ed975422b071); `write_with`/`append`/
+         `write_at` refuse a non-regular inode (9534db6f345d, 978776e2fe03);
+         symlink target length checked before allocating (f737f3d6e9e4).
+      2. xattr blocks: refcount honoured — clone a shared block before
+         changing it, decrement instead of free (12afcde622bc); `i_blocks`
+         keeps the xattr block across rewrite/truncate/dir growth
+         (16cc8481732e, abb26904f7ff).
+      3. archives: entry, hard-link and whiteout paths refuse `..`
+         (f12ada4fdef6, d3df6a641775, 285fc60e938a); whiteouts spare this
+         layer's own entries (2f271dfded9e); symlinks keep owner, times and
+         xattrs both ways (4d4d5c59ed24); pack streams file contents
+         (f06f9c5e6605).
+      4. rename of an indexed directory rewrites `..` in the htree root,
+         located before the move (78d76493e7c8, 83c24c7dbb2d); `write_data`
+         advances its allocation goal (402731625099).
+      5. `Volume::open` replays a journal that needs recovery, as a mount
+         does, and refuses one it cannot replay (27a761f4df5e).
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
