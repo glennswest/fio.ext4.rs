@@ -1864,9 +1864,14 @@ mod tests {
         vol.fs.write_inode(inum, &inode).await.unwrap();
     }
 
+    /// Block 0 minus the superblock (bytes 1024..2048, inside block 0 at
+    /// 4 KiB), which a correct flush rewrites with new counts and times.
     async fn block_zero(dev: &MemDevice, block_size: usize) -> Vec<u8> {
         let mut buf = vec![0u8; block_size];
         dev.read_at(0, &mut buf).await.unwrap();
+        if block_size > 1024 {
+            buf[1024..2048].fill(0);
+        }
         buf
     }
 
@@ -1912,8 +1917,10 @@ mod tests {
         {
             let mut vol = Volume::open(&dev).await.unwrap();
             vol.set_time(1_700_000_000);
-            vol.write_at("/sparse", 10, b"head").await.unwrap();
-            expected[10..14].copy_from_slice(b"head");
+            // Into the hole, so a write through it puts these bytes in block 0.
+            let at = 2 * bs + 10;
+            vol.write_at("/sparse", at as u64, b"in the hole").await.unwrap();
+            expected[at..at + 11].copy_from_slice(b"in the hole");
             vol.flush().await.unwrap();
             assert_eq!(vol.read("/sparse").await.unwrap(), expected, "{what}: write_at");
         }
