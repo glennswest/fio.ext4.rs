@@ -4,7 +4,7 @@ Async userspace file I/O into an ext2/ext3/ext4 filesystem. No kernel, no
 mount, no loop device.
 
 - **Crate:** `fio-ext4` (lib `fio_ext4`)
-- **Version:** 1.8.3 — `Cargo.toml` is the single version location
+- **Version:** 1.8.4 — `Cargo.toml` is the single version location
 - **Licence:** MIT OR Apache-2.0
 - **Sibling:** `../mkfs.ext4.rs` provides the on-disk format, the `BlockDevice`
   seam, the read layer, `fsck` and the write-back `CachedDevice`. `fio-ext4`
@@ -159,9 +159,13 @@ too, the finding is about the reader.
       0's block bitmap and groups 16–21's counts wrong. Released as fio-ext4
       **v1.8.3**. Not covered here: a 256 TiB image (stormblock's
       `examples/ext4_large bare 256T` is the end-to-end check).
-- [ ] Issue #20 (P0, finding 995b4bb62e00) — `write_data` wrote through
-      `map::HOLE` (block 0) when `append`/`write_at` met a sparse file. Fix:
-      allocate a block for each kept hole; unit tests in `src/volume.rs`.
+- [x] Issue #20 (P0, finding 995b4bb62e00) — `write_data` wrote through
+      `map::HOLE` (block 0) when `append`/`write_at` met a sparse file. Fix
+      (bbae218): allocate a block for each kept hole; `sparse_update_*` unit
+      tests in `src/volume.rs` (ext4 4K/1K, ext2 1K). Verified by sc-build:
+      29dcaa7 build, every test, clippy `-D warnings` clean. Negative
+      control (fix reverted, f9367c1): all three fail, fsck finds `i_blocks`
+      wrong after the append. Released as fio-ext4 **v1.8.4**.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
