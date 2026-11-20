@@ -684,8 +684,10 @@ impl<D: BlockDevice> Volume<D> {
 
     /// Write `data` at `offset`, leaving the rest of the file alone.
     ///
-    /// Extends the file if the write runs past the end, and leaves a hole if
-    /// the offset is past it.
+    /// Extends the file if the write runs past the end; a gap between the old
+    /// end and `offset` is written as zeroes, not left as a hole. Holes the
+    /// file already has (a sparse file the kernel wrote) are filled with
+    /// allocated blocks, since the whole file is rewritten.
     pub async fn write_at(&mut self, path: &str, offset: u64, data: &[u8]) -> Result<()> {
         let inum = match self.fs.resolve_path(path).await? {
             Some(inum) => inum,
@@ -1561,6 +1563,19 @@ impl<D: BlockDevice> Volume<D> {
                 }
             }
         }
+        // Fill any hole being kept. The whole of `data` is about to be
+        // written, so every slot needs a real block: a hole is `map::HOLE`,
+        // block 0, and writing through it lands on the boot block — or, at
+        // 4 KiB blocks, the superblock (finding 995b4bb62e00, #20). A sparse
+        // file reaches here from the kernel, or any writer that leaves holes,
+        // through `append` and `write_at`.
+        let mut prev = 0;
+        for slot in list.iter_mut() {
+            if *slot == map::HOLE {
+                *slot = self.alloc.alloc_block(&mut self.fs, prev).await?;
+            }
+            prev = *slot;
+        }
         // And take what is missing.
         let goal = list.last().copied().unwrap_or(0);
         while (list.len() as u64) < needed {
@@ -1788,3 +1803,136 @@ pub use mkfs_ext4::structs::dirent::file_type as FileType;
 
 /// The raw directory entry type, for callers that want the on-disk view.
 pub type RawDirEntry = DirEntry;
+
+#[cfg(test)]
+mod tests {
+    //! Writes into sparse files. A hole can only be made from inside the
+    //! crate — every public writer fills — so these punch one the way the
+    //! kernel leaves one (`fallocate --punch-hole`, or `truncate` then a write
+    //! past the end): the block freed, its slot unmapped.
+
+    use super::*;
+    use mkfs_ext4::device::MemDevice;
+    use mkfs_ext4::format::format;
+    use mkfs_ext4::fsck::{self, CheckScope, FsckOptions};
+    use mkfs_ext4::params::{Params, Profile};
+
+    const MIB: u64 = 1024 * 1024;
+
+    async fn fresh(profile: Profile, block_size: u32) -> MemDevice {
+        let dev = MemDevice::new(32 * MIB);
+        let params = Params::new(profile)
+            .uuid(*b"0123456789abcdef")
+            .mkfs_time(1_700_000_000)
+            .block_size(block_size);
+        format(&dev, &params).await.unwrap();
+        dev
+    }
+
+    async fn assert_clean(dev: &MemDevice, what: &str) {
+        let forced = FsckOptions::check_only().force(true);
+        let report = fsck::check(dev, &forced).await.unwrap();
+        assert_eq!(report.scope, CheckScope::Forced, "fsck skipped the filesystem");
+        assert!(report.directories > 0, "fsck read no directories");
+        assert!(
+            report.is_clean(),
+            "{what}: filesystem is not clean:\n{}",
+            report
+                .problems
+                .iter()
+                .map(|p| format!("  [pass {} {}] {}", p.pass, p.code, p.message))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+
+    /// Unmap logical blocks `holes` of `path` and give them back.
+    async fn punch(vol: &mut Volume<&MemDevice>, path: &str, holes: &[usize]) {
+        let inum = vol.lookup(path).await.unwrap();
+        let mut inode = vol.fs.read_inode(inum).await.unwrap();
+        let mut list = map::read_block_list(&vol.fs, &inode).await.unwrap();
+        for &h in holes {
+            vol.alloc.free_block(&mut vol.fs, list[h]).await.unwrap();
+            list[h] = map::HOLE;
+        }
+        let meta = map::write_block_list(&mut vol.fs, &mut vol.alloc, inum, &mut inode, &list)
+            .await
+            .unwrap();
+        let mapped = list.iter().filter(|&&b| b != map::HOLE).count() as u64;
+        let block_size = vol.fs.block_size() as u64;
+        inode.blocks = (mapped + meta) * (block_size / 512);
+        vol.fs.write_inode(inum, &inode).await.unwrap();
+    }
+
+    async fn block_zero(dev: &MemDevice, block_size: usize) -> Vec<u8> {
+        let mut buf = vec![0u8; block_size];
+        dev.read_at(0, &mut buf).await.unwrap();
+        buf
+    }
+
+    /// Finding 995b4bb62e00 (#20): `append` and `write_at` on a sparse file
+    /// wrote the hole's contents to physical block 0.
+    async fn sparse_update(profile: Profile, block_size: u32) {
+        let what = format!("{profile:?} {block_size}");
+        let bs = block_size as usize;
+        let dev = fresh(profile, block_size).await;
+
+        let original: Vec<u8> = (0..4 * bs).map(|i| (i % 251) as u8 | 1).collect();
+        let mut expected = original.clone();
+        {
+            let mut vol = Volume::open(&dev).await.unwrap();
+            vol.set_time(1_700_000_000);
+            vol.write("/sparse", &original).await.unwrap();
+            punch(&mut vol, "/sparse", &[1, 2]).await;
+            vol.flush().await.unwrap();
+            expected[bs..3 * bs].fill(0);
+            assert_eq!(vol.read("/sparse").await.unwrap(), expected, "{what}: punched");
+        }
+        assert_clean(&dev, &format!("{what}: after the punch")).await;
+        let before = block_zero(&dev, bs).await;
+
+        {
+            let mut vol = Volume::open(&dev).await.unwrap();
+            vol.set_time(1_700_000_000);
+            vol.append("/sparse", b"tail").await.unwrap();
+            expected.extend_from_slice(b"tail");
+            vol.flush().await.unwrap();
+            assert_eq!(vol.read("/sparse").await.unwrap(), expected, "{what}: append");
+        }
+        assert_eq!(block_zero(&dev, bs).await, before, "{what}: append wrote block 0");
+        assert_clean(&dev, &format!("{what}: after append")).await;
+
+        {
+            let mut vol = Volume::open(&dev).await.unwrap();
+            vol.set_time(1_700_000_000);
+            punch(&mut vol, "/sparse", &[2]).await;
+            vol.flush().await.unwrap();
+        }
+        assert_clean(&dev, &format!("{what}: after the second punch")).await;
+        {
+            let mut vol = Volume::open(&dev).await.unwrap();
+            vol.set_time(1_700_000_000);
+            vol.write_at("/sparse", 10, b"head").await.unwrap();
+            expected[10..14].copy_from_slice(b"head");
+            vol.flush().await.unwrap();
+            assert_eq!(vol.read("/sparse").await.unwrap(), expected, "{what}: write_at");
+        }
+        assert_eq!(block_zero(&dev, bs).await, before, "{what}: write_at wrote block 0");
+        assert_clean(&dev, &format!("{what}: after write_at")).await;
+    }
+
+    #[tokio::test]
+    async fn sparse_update_ext4_4k() {
+        sparse_update(Profile::Ext4, 4096).await;
+    }
+
+    #[tokio::test]
+    async fn sparse_update_ext4_1k() {
+        sparse_update(Profile::Ext4, 1024).await;
+    }
+
+    #[tokio::test]
+    async fn sparse_update_ext2_1k() {
+        sparse_update(Profile::Ext2, 1024).await;
+    }
+}

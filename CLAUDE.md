@@ -159,6 +159,9 @@ too, the finding is about the reader.
       0's block bitmap and groups 16–21's counts wrong. Released as fio-ext4
       **v1.8.3**. Not covered here: a 256 TiB image (stormblock's
       `examples/ext4_large bare 256T` is the end-to-end check).
+- [ ] Issue #20 (P0, finding 995b4bb62e00) — `write_data` wrote through
+      `map::HOLE` (block 0) when `append`/`write_at` met a sparse file. Fix:
+      allocate a block for each kept hole; unit tests in `src/volume.rs`.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.

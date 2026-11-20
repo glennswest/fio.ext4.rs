@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### 2026-11-20
+- **fix:** `append` and `write_at` on a sparse file wrote the holes'
+  contents to physical block 0 — the boot block, or at 4 KiB blocks the
+  superblock (finding 995b4bb62e00, #20). `write_data` kept `map::HOLE`
+  entries of the existing block map and wrote through them; it now allocates
+  a block for each hole before writing. Unit tests in `src/volume.rs` punch
+  holes as the kernel leaves them (ext4 4 KiB/1 KiB, ext2 1 KiB), then
+  append and `write_at`, check block 0 is unchanged, the contents, and a
+  forced fsck. `write_at`'s doc no longer claims it leaves a hole.
+
 ### 2026-11-18
 - **docs:** Refreshed docs against `git log --since=2026-11-11`: the only
   commit is the 2026-11-18 research note (docs only), so no code changed and
