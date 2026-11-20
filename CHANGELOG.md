@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### 2026-11-20
+- **docs:** README's dependency snippet takes fio-ext4 v1.8.4 by `rev`
+  (dee995d, its release commit).
+
 ### 2026-11-18
 - **docs:** Refreshed docs against `git log --since=2026-11-11`: the only
   commit is the 2026-11-18 research note (docs only), so no code changed and
