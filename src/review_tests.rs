@@ -3,17 +3,20 @@
 //! Inside the crate rather than under `tests/`, because several cases need
 //! a state no public writer makes — an attribute block shared by three
 //! inodes, a journal holding a committed transaction — and build it through
-//! the crate's own handles on the filesystem. Each case ends with a forced
-//! fsck, as every test here does.
+//! the crate's own handles on the filesystem. Each case that writes ends with
+//! a forced fsck; the one that refuses to open writes nothing.
 
 use mkfs_ext4::bytes::{get_u32, put_u32};
 use mkfs_ext4::device::MemDevice;
 use mkfs_ext4::format::format;
+use mkfs_ext4::fs::Filesystem;
 use mkfs_ext4::fsck::{self, CheckScope, FsckOptions};
 use mkfs_ext4::params::{Params, Profile};
 use mkfs_ext4::structs::xattr;
+use mkfs_ext4::IncompatFeatures;
 
 use crate::error::Error;
+use crate::map;
 use crate::tar::{self, EntryKind, Header};
 use crate::volume::{Special, Volume};
 use crate::Attrs;
@@ -635,4 +638,124 @@ async fn ordinary_writes_allocate_in_linear_time() {
         vol.flush().await.unwrap();
     }
     assert_clean(&dev, "after a large ordinary write").await;
+}
+
+// ---- a journal that needs recovery (27a761f4df5e) ----
+
+fn be32(buf: &[u8], at: usize) -> u32 {
+    u32::from_be_bytes(buf[at..at + 4].try_into().unwrap())
+}
+
+/// Leave one committed transaction in the journal, logging `data` for block
+/// `home`, and the needs_recovery flag set: what a crash after the commit
+/// and before the checkpoint leaves. No checksums, 32-bit tags — the
+/// simplest log JBD2 writes.
+async fn leave_unreplayed(dev: &MemDevice, home: u64, data: &[u8], jbd2_incompat: u32) {
+    use mkfs_ext4::journal::{off, JBD2_MAGIC};
+    use mkfs_ext4::structs::superblock::ino;
+
+    let mut fs = Filesystem::open(dev).await.unwrap();
+    let bs = fs.block_size() as usize;
+    let jinode = fs.read_inode(ino::JOURNAL).await.unwrap();
+    let jmap = map::read_block_list(&fs, &jinode).await.unwrap();
+    let mut jsb = fs.read_block(jmap[0]).await.unwrap();
+    let first = be32(&jsb, off::S_FIRST) as usize;
+    let seq = be32(&jsb, off::S_SEQUENCE);
+
+    let header = |kind: u32| {
+        let mut b = vec![0u8; bs];
+        b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+        b[4..8].copy_from_slice(&kind.to_be_bytes());
+        b[8..12].copy_from_slice(&seq.to_be_bytes());
+        b
+    };
+    // Descriptor: one 8-byte tag (block, checksum, flags = LAST_TAG), then
+    // the journal's UUID, since the tag does not say SAME_UUID.
+    let mut desc = header(1);
+    desc[12..16].copy_from_slice(&(home as u32).to_be_bytes());
+    desc[18..20].copy_from_slice(&8u16.to_be_bytes());
+    desc[20..36].copy_from_slice(&jsb[off::S_UUID..off::S_UUID + 16]);
+    fs.write_block(jmap[first], &desc).await.unwrap();
+    fs.write_block(jmap[first + 1], data).await.unwrap();
+    fs.write_block(jmap[first + 2], &header(2)).await.unwrap();
+    // Whatever follows must not continue the log.
+    fs.write_block(jmap[first + 3], &vec![0u8; bs]).await.unwrap();
+
+    jsb[off::S_FEATURE_INCOMPAT..off::S_FEATURE_INCOMPAT + 4]
+        .copy_from_slice(&jbd2_incompat.to_be_bytes());
+    jsb[off::S_START..off::S_START + 4].copy_from_slice(&(first as u32).to_be_bytes());
+    fs.write_block(jmap[0], &jsb).await.unwrap();
+
+    fs.superblock_mut().feature_incompat.insert(IncompatFeatures::RECOVER);
+    fs.flush_superblock().await.unwrap();
+    fs.device().flush().await.unwrap();
+}
+
+async fn first_block_of(vol: &Volume<&MemDevice>, path: &str) -> u64 {
+    let inode = vol.fs.read_inode(vol.lookup(path).await.unwrap()).await.unwrap();
+    vol.fs.resolve_block(&inode, 0).await.unwrap().unwrap()
+}
+
+#[tokio::test]
+async fn a_journal_needing_recovery_is_replayed_on_open() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    let home;
+    {
+        let mut vol = open(&dev).await;
+        vol.write("/f", &[b'o'; 4096]).await.unwrap();
+        vol.flush().await.unwrap();
+        home = first_block_of(&vol, "/f").await;
+    }
+    leave_unreplayed(&dev, home, &[b'n'; 4096], 0).await;
+    {
+        let mut vol = open(&dev).await;
+        assert!(
+            !vol.fs.superblock().feature_incompat.contains(IncompatFeatures::RECOVER),
+            "needs_recovery still set after open"
+        );
+        assert_eq!(
+            vol.read("/f").await.unwrap(),
+            vec![b'n'; 4096],
+            "the committed transaction was not replayed"
+        );
+        vol.write("/after", b"written after the replay").await.unwrap();
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after replay and a write").await;
+}
+
+#[tokio::test]
+async fn a_journal_that_cannot_be_replayed_is_refused() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    let home;
+    {
+        let mut vol = open(&dev).await;
+        vol.write("/f", &[b'o'; 4096]).await.unwrap();
+        vol.flush().await.unwrap();
+        home = first_block_of(&vol, "/f").await;
+    }
+    // fast_commit: a separate replay protocol, not done here.
+    leave_unreplayed(&dev, home, &[b'n'; 4096], 0x20).await;
+    match Volume::open(&dev).await {
+        Err(Error::Unsupported(why)) => assert!(why.contains("recovery"), "{why}"),
+        Err(e) => panic!("wrong error: {e}"),
+        Ok(_) => panic!("opened for writing over an unreplayed journal"),
+    }
+}
+
+#[tokio::test]
+async fn a_recovery_flag_without_a_journal_is_cleared() {
+    let dev = fresh(Profile::Ext2, 1024, 32 * MIB).await;
+    {
+        let mut fs = Filesystem::open(&dev).await.unwrap();
+        fs.superblock_mut().feature_incompat.insert(IncompatFeatures::RECOVER);
+        fs.flush_superblock().await.unwrap();
+    }
+    {
+        let mut vol = open(&dev).await;
+        assert!(!vol.fs.superblock().feature_incompat.contains(IncompatFeatures::RECOVER));
+        vol.write("/f", b"x").await.unwrap();
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after clearing a stale flag").await;
 }

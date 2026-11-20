@@ -45,6 +45,12 @@
 - **perf:** `write`, `append` and `write_at` advance the allocation goal block
   by block, so a file's allocation is linear rather than quadratic in its
   length (#23, 402731625099).
+- **fix:** `Volume::open` (and so `open_cached` and the CLI) replays a
+  journal that needs recovery before anything can write, as a mount does,
+  and clears `needs_recovery`. It used to write over stale bitmaps that the
+  next mount's replay would then overwrite (#23, 27a761f4df5e). A journal it
+  cannot replay, or a replay that finds damage, is refused with
+  `Unsupported`; a stale flag on a filesystem without a journal is cleared.
 - **docs:** README's dependency snippet takes fio-ext4 v1.8.4 by `rev`
   (dee995d, its release commit).
 

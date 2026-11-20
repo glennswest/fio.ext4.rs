@@ -228,7 +228,10 @@ limits and checksums it expects.
 
 ## Other API
 
-Also on `Volume`: `open` and `open_cached`; `write_with`, `mkdir_with` and
+Also on `Volume`: `open` and `open_cached`, which replay a journal left
+needing recovery before anything is written (as a mount would), and refuse
+one they cannot replay — an external journal, `fast_commit`, or a replay that
+finds damage; `write_with`, `mkdir_with` and
 `mkdir_all_with` (the `Attrs` forms); `lookup`, `exists`, `stat` and `read_dir`; `append` and
 `write_at` (writes at an offset); `unlink`, `rmdir` and `remove_all`; `link`
 (hard links), `rename`, `symlink` / `read_link`, `mknod` / `device_numbers`;

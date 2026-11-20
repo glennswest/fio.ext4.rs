@@ -10,6 +10,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use mkfs_ext4::cache::CachedDevice;
 use mkfs_ext4::device::BlockDevice;
 use mkfs_ext4::fs::Filesystem;
+use mkfs_ext4::recovery::{self, Journal};
+use mkfs_ext4::structs::superblock::state;
+use mkfs_ext4::{CompatFeatures, IncompatFeatures};
 use mkfs_ext4::structs::dirent::{self, DirEntry};
 use mkfs_ext4::structs::htree;
 use mkfs_ext4::structs::inode::{mode, Inode};
@@ -274,8 +277,18 @@ pub struct Volume<D: BlockDevice> {
 
 impl<D: BlockDevice> Volume<D> {
     /// Open a filesystem on `device`.
+    ///
+    /// A filesystem left with a journal that needs recovery — the kernel
+    /// stopped without unmounting it — has that journal replayed first, as
+    /// a mount would: the committed transactions are written home and the
+    /// `needs_recovery` flag cleared. Writing before then would allocate from
+    /// bitmaps the replay is about to overwrite (finding 27a761f4df5e). A
+    /// journal this crate cannot replay (external, `fast_commit`, features
+    /// it does not know) is refused with [`Error::Unsupported`], and so is
+    /// one whose replay found damage: both want the kernel or `e2fsck`.
     pub async fn open(device: D) -> Result<Self> {
-        let fs = Filesystem::open(device).await?;
+        let mut fs = Filesystem::open(device).await?;
+        recover_journal(&mut fs).await?;
         Ok(Self {
             fs,
             alloc: Allocator::new(),
@@ -2131,6 +2144,58 @@ fn check_name(name: &str) -> Result<()> {
 /// NUL); a longer one has nowhere to go in a single-block symlink.
 fn max_symlink_len(block_size: u32) -> usize {
     (block_size as usize).min(4096) - 1
+}
+
+/// Replay the journal of a filesystem that needs it, as `e2fsck` and a mount
+/// do (`e2fsck_run_ext3_journal`).
+async fn recover_journal<D: BlockDevice>(fs: &mut Filesystem<D>) -> Result<()> {
+    let sb = fs.superblock();
+    if !sb.feature_incompat.contains(IncompatFeatures::RECOVER) {
+        return Ok(());
+    }
+    if !sb.feature_compat.contains(CompatFeatures::HAS_JOURNAL) {
+        // The flag with no journal behind it, which `e2fsck -p` clears
+        // without asking: there is nothing to replay.
+        fs.superblock_mut()
+            .feature_incompat
+            .remove(IncompatFeatures::RECOVER);
+        fs.flush_superblock().await?;
+        return Ok(());
+    }
+
+    let mut journal = match Journal::open(fs).await? {
+        Ok(journal) => journal,
+        Err(why) => {
+            return Err(Error::Unsupported(format!(
+                "the journal needs recovery, and {why}; mount and unmount the \
+                 filesystem to let the kernel replay it, or run e2fsck"
+            )))
+        }
+    };
+    let recovery = recovery::recover(fs, &mut journal).await?;
+    // The superblock and group descriptors are journalled like any other
+    // block, so what was read at open may be stale now.
+    fs.reload().await?;
+    let sb = fs.superblock_mut();
+    sb.feature_incompat.remove(IncompatFeatures::RECOVER);
+    if !recovery.errors.is_empty() {
+        // e2fsck_clear_recover(ctx, error): a full check is due.
+        sb.state &= !state::VALID_FS;
+    }
+    if recovery.errno != 0 {
+        sb.state |= state::ERROR_FS;
+    }
+    fs.flush_superblock().await?;
+    fs.device().flush().await?;
+
+    if !recovery.errors.is_empty() {
+        return Err(Error::Unsupported(format!(
+            "the journal was replayed but found damage ({}); run e2fsck -f before \
+             writing to this filesystem",
+            recovery.errors.join("; ")
+        )));
+    }
+    Ok(())
 }
 
 /// Seconds since the epoch, or zero if the clock is before it.
