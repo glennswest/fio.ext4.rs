@@ -9,6 +9,8 @@
   misses `..` (fixed upstream in mkfs.ext4.rs#41); a tar test spells NULs as
   `\x00` for clippy's `octal_escapes` (#23, #24).
 - **chore:** Released v1.8.5.
+- **docs:** README's dependency snippet takes fio-ext4 v1.8.5 by `rev`
+  (8ddcede, its release commit).
 
 ### 2026-11-20
 - **docs:** README's dependency snippet takes fio-ext4 v1.8.4 by `rev`

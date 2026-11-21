@@ -166,7 +166,7 @@ too, the finding is about the reader.
       29dcaa7 build, every test, clippy `-D warnings` clean. Negative
       control (fix reverted, f9367c1): all three fail, fsck finds `i_blocks`
       wrong after the append. Released as fio-ext4 **v1.8.4**.
-- [ ] Issue #23 (P1) — 20 review findings in `src/volume.rs`, 14 distinct
+- [x] Issue #23 (P1) — 20 review findings in `src/volume.rs`, 14 distinct
       (duplicates share a fix). `1d4c68f8df40` is #20's hole fix, already on
       main. The rest, one commit per group, each naming its finding ids, unit
       tests in `src/review_tests.rs` ending in a forced fsck:
@@ -189,13 +189,14 @@ too, the finding is about the reader.
          advances its allocation goal (402731625099).
       5. `Volume::open` replays a journal that needs recovery, as a mount
          does, and refuses one it cannot replay (27a761f4df5e).
-      State 2026-11-20: all five groups on main (e707097, 0a75d1e, 49bcfb7,
-      93c436d, 413c30c, docs 0668e39); the first sc-build of the tests found
-      two compile errors in `src/review_tests.rs`, fixed in 71dbd31. Still to
-      do: sc-build main (build, test, clippy `-D warnings`); negative control
-      `SC_BUILD_EXPECT_FAIL=1` on branch `wip/issue23-negative` (fe5804c:
-      fixes reverted, tests kept); release v1.8.5; close #23.
-- [ ] Issue #24 (P1) — 4 review findings in `src/tar.rs`, 3 distinct.
+      Verified by sc-build: 581c7bb build, every test, clippy `-D warnings`
+      clean; release commit 8ddcede the same `--locked`, `cargo tree` on
+      mkfs-ext4 v4.1.3#e009cf40. Negative control (fixes reverted, tests
+      kept, 09dee60): all 19 review tests fail, each on its bug. The
+      indexed-rename test reads `..` from the htree root, since the pinned
+      mkfs-ext4's indexed lookup misses `..` (fixed in mkfs.ext4.rs#41,
+      after its v5.0.0). Released as fio-ext4 **v1.8.5**.
+- [x] Issue #24 (P1) — 4 review findings in `src/tar.rs`, 3 distinct.
       1. `encode` bounds every text copy to its field: a link over 100
          bytes no longer runs into `prefix` (f1dbfb8746d6); linkname keeps
          the first 100 bytes, the full target goes in PAX `linkpath`.
@@ -207,6 +208,11 @@ too, the finding is about the reader.
          `at + len`, `space + 1 < end <= body.len()`, a closing newline and
          a `=`; anything else is an error, never a panic (4f140b33ebe6,
          8a75ec62f4e7).
+      Fix 1cf366b. Verified by the same builds as #23 (581c7bb, release
+      8ddcede). Negative control (tar.rs fixes reverted, 6afbfe0): all five
+      new tests fail — 8 GiB read back as 0, a 189-byte target makes `s`
+      into `a/s`, both PAX cases panic in the old parser. Released in
+      **v1.8.5**.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
