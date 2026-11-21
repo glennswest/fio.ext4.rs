@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### 2026-11-21
+- **fix:** A block map that cannot be rebuilt leaves the live one whole (#26,
+  finding af0f7637339c). The new tree is built before the old one is freed
+  (57b7c46, with #25); now nothing in the inode changes until it is complete
+  (the extent path sets `EXTENTS` only on success), and a file past triple
+  indirection is refused before any of its tree is allocated or written.
+  A fragmented file grown past four extent leaves used to be refused with
+  its old tree already freed, the on-disk inode pointing at blocks the next
+  allocation could hand out. Test:
+  `nospace_tests::a_map_too_fragmented_to_build_leaves_the_old_tree_live`.
 - **fix:** A failed operation gives back every block it took (#25, finding
   4b2834a8dd5e). `alloc_blocks` is all or nothing; `write`, `append` and
   `write_at` release the blocks they took and leave the file's old map, size

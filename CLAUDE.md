@@ -226,6 +226,18 @@ too, the finding is about the reader.
       tests kept, branch `negctl-25` d1279ef): all 6 fail on the free-count
       assertion. Trade-off: rewriting a block-mapped file on a volume with
       zero free blocks may now fail where reusing its old map's blocks fit.
+- [x] Issue #26 (major, finding af0f7637339c) — `write_block_list` freed
+      the live map before the replacement could be built, so a refused
+      rebuild (a fragmented file past four extent leaves, an allocation or
+      device error) left the inode on free blocks. The build-then-free
+      reorder landed with #25 (57b7c46); 5872f59 leaves the inode untouched
+      until the tree is complete and checks indirect capacity before
+      allocating (`map::indirect_capacity`). Test: a three-leaf tree grown
+      to six leaves is refused — free count unchanged, old leaves still
+      allocated, contents intact, forced fsck clean. Verified by sc-build:
+      5872f59 build, clippy `-D warnings` clean, every test passes.
+      Negative control (free-first order restored, branch `negctl-26`
+      5ff748c): the test fails on the free count.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
