@@ -563,6 +563,21 @@ async fn pack_streams_file_contents() {
 
 // ---- moving an indexed directory (78d76493e7c8, 83c24c7dbb2d) ----
 
+/// The inode a directory's `..` names, read from its first block — for an
+/// indexed directory, the htree root, which is where the kernel reads it.
+/// Not `lookup("…/..")`: at the pinned mkfs-ext4 (v4.1.3) an indexed lookup
+/// hashes `..` like any name and misses it (fixed in mkfs.ext4.rs#41).
+async fn dotdot_of(vol: &Volume<&MemDevice>, dir: &str) -> u32 {
+    use mkfs_ext4::structs::dirent;
+    let inode = vol.fs.read_inode(vol.lookup(dir).await.unwrap()).await.unwrap();
+    let first = vol.fs.resolve_block(&inode, 0).await.unwrap().unwrap();
+    let block = vol.fs.read_block(first).await.unwrap();
+    let entries = dirent::parse_block(&block).unwrap();
+    assert_eq!(entries[0].name, b".", "{dir}: first entry");
+    assert_eq!(entries[1].name, b"..", "{dir}: second entry");
+    entries[1].inode
+}
+
 async fn move_indexed(block_size: u32) {
     let what = format!("ext4 {block_size}");
     let dev = fresh(Profile::Ext4, block_size, 32 * MIB).await;
@@ -589,7 +604,7 @@ async fn move_indexed(block_size: u32) {
         vol.rename("/a/big", "/b/big").await.unwrap();
         assert!(!vol.exists("/a/big").await.unwrap());
         assert_eq!(
-            vol.lookup("/b/big/..").await.unwrap(),
+            dotdot_of(&vol, "/b/big").await,
             vol.lookup("/b").await.unwrap(),
             "{what}: .. still names the old parent"
         );
