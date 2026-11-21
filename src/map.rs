@@ -106,6 +106,10 @@ pub(crate) async fn write_block_list<D: BlockDevice>(
     // old map whole and still owning what it owned; the blocks the failed
     // build took are given back, and nothing leaks (finding 4b2834a8dd5e).
     let old_meta = map_metadata_blocks(fs, inode).await?;
+    // NEGATIVE CONTROL (#26): the old order, the live map freed first.
+    for &block in &old_meta {
+        alloc.free_block(fs, block).await?;
+    }
 
     let mut fresh = Vec::new();
     let built = if inode.uses_extents() {
