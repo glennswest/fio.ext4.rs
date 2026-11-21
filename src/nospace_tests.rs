@@ -8,6 +8,11 @@
 //! Each case compares the superblock's free-block count before and after the
 //! failure, then ends in a forced fsck, which also catches a bitmap that
 //! disagrees with the counters.
+//!
+//! Finding af0f7637339c (#26) is the same rule for the block map itself: a
+//! replacement map that cannot be built leaves the live one whole. It used to
+//! free the old tree first, so a refused rebuild left the on-disk inode
+//! pointing at free blocks the next allocation could hand out.
 
 use mkfs_ext4::device::MemDevice;
 use mkfs_ext4::format::format;
@@ -15,6 +20,7 @@ use mkfs_ext4::fsck::{self, CheckScope, FsckOptions};
 use mkfs_ext4::params::{Params, Profile};
 
 use crate::error::Error;
+use crate::map;
 use crate::tar::{self, Header};
 use crate::volume::Volume;
 
@@ -247,4 +253,70 @@ async fn a_full_volume_refuses_new_names_without_taking_inodes() {
         vol.flush().await.unwrap();
     }
     assert_clean(&dev, "after names refused on a full volume").await;
+}
+
+// ---- the live map survives a replacement that fails (af0f7637339c, #26) ----
+
+/// `n` blocks with a free block between each pair, so each is an extent of
+/// its own, filled with `fill`.
+async fn fragments(vol: &mut Volume<&MemDevice>, n: u64, fill: u8) -> Vec<u64> {
+    let run = vol.alloc.alloc_blocks(&mut vol.fs, 0, 2 * n).await.unwrap();
+    let (keep, gaps): (Vec<_>, Vec<_>) = run.iter().enumerate().partition(|(i, _)| i % 2 == 0);
+    let keep: Vec<u64> = keep.into_iter().map(|(_, &b)| b).collect();
+    let gaps: Vec<u64> = gaps.into_iter().map(|(_, &b)| b).collect();
+    vol.alloc.release(&mut vol.fs, &gaps).await;
+    let block = vec![fill; bs(vol) as usize];
+    for &b in &keep {
+        vol.fs.write_block(b, &block).await.unwrap();
+    }
+    keep
+}
+
+#[tokio::test]
+async fn a_map_too_fragmented_to_build_leaves_the_old_tree_live() {
+    let dev = fresh(Profile::Ext4, 1024, 16 * MIB).await;
+    {
+        let mut vol = open(&dev).await;
+        let bsz = bs(&vol);
+        let inum = vol.write("/f", b"").await.unwrap();
+
+        // 200 one-block extents: three leaves at 1 KiB, a valid tree.
+        let old = fragments(&mut vol, 200, 0x5a).await;
+        let mut inode = vol.fs.read_inode(inum).await.unwrap();
+        let meta = map::write_block_list(&mut vol.fs, &mut vol.alloc, inum, &mut inode, &old)
+            .await
+            .unwrap();
+        assert!(meta >= 2, "the old tree needs leaves for this test ({meta})");
+        inode.size = old.len() as u64 * bsz;
+        inode.blocks = (old.len() as u64 + meta) * (bsz / 512);
+        vol.fs.write_inode(inum, &inode).await.unwrap();
+        let leaves = map::map_metadata_blocks(&vol.fs, &inode).await.unwrap();
+        let contents = vol.read("/f").await.unwrap();
+
+        // 300 more: six leaves, more than the four an inode can index.
+        let more = fragments(&mut vol, 300, 0xa5).await;
+        let grown: Vec<u64> = old.iter().chain(&more).copied().collect();
+        let before = free_blocks(&vol);
+        let mut attempt = vol.fs.read_inode(inum).await.unwrap();
+        let e = map::write_block_list(&mut vol.fs, &mut vol.alloc, inum, &mut attempt, &grown)
+            .await
+            .unwrap_err();
+        assert!(matches!(e, Error::Unsupported(_)), "{e}");
+        assert_eq!(free_blocks(&vol), before, "the refused rebuild moved the free count");
+        assert_eq!(attempt.block, inode.block, "the refused rebuild changed the inode's map");
+
+        // The old leaves are still taken: what is allocated now cannot be
+        // one of them.
+        vol.alloc.release(&mut vol.fs, &more).await;
+        let next = vol.alloc.alloc_blocks(&mut vol.fs, 0, 64).await.unwrap();
+        assert!(
+            next.iter().all(|b| !leaves.contains(b)),
+            "a live leaf of /f was handed out again"
+        );
+        vol.alloc.release(&mut vol.fs, &next).await;
+
+        assert_eq!(vol.read("/f").await.unwrap(), contents);
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after a refused map rebuild").await;
 }

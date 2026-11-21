@@ -153,10 +153,11 @@ async fn write_extent_map<D: BlockDevice>(
     let extents = to_extents(list);
     let inline_max = ExtentHeader::max_entries(extent::INLINE_LEN, false) as usize;
 
-    inode.flags |= iflags::EXTENTS;
-
+    // Nothing in `inode` changes until the new tree is complete: a caller
+    // whose build fails still holds the old map (finding af0f7637339c).
     if extents.len() <= inline_max {
         inode.block = extent::build_inline(&extents)?;
+        inode.flags |= iflags::EXTENTS;
         return Ok(0);
     }
 
@@ -211,6 +212,7 @@ async fn write_extent_map<D: BlockDevice>(
         idx.encode_into(&mut root[at..at + extent::ENTRY_LEN]);
     }
     inode.block = root;
+    inode.flags |= iflags::EXTENTS;
 
     Ok(leaves as u64)
 }
@@ -262,6 +264,12 @@ fn stamp_extent_block<D: BlockDevice>(
     put_u32(buf, at, crc);
 }
 
+/// The most blocks a block-mapped inode addresses: twelve direct, then one
+/// level, two and three of `per_block` pointers each.
+pub(crate) fn indirect_capacity(per_block: u64) -> u64 {
+    NDIR_BLOCKS as u64 + per_block + per_block * per_block + per_block * per_block * per_block
+}
+
 /// Build direct and indirect pointers for `list`.
 async fn write_indirect_map<D: BlockDevice>(
     fs: &mut Filesystem<D>,
@@ -274,6 +282,16 @@ async fn write_indirect_map<D: BlockDevice>(
     let per_block = (block_size / 4) as usize;
     let mut pointers = [0u32; N_BLOCKS];
     let mut meta_used = 0u64;
+
+    // Refused before anything is allocated or written, not after the whole
+    // tree has been (finding af0f7637339c).
+    if list.len() as u64 > indirect_capacity(per_block as u64) {
+        return Err(Error::Unsupported(format!(
+            "a {}-block file exceeds what triple indirection addresses at \
+             {block_size}-byte blocks",
+            list.len()
+        )));
+    }
 
     // Direct blocks.
     for (i, slot) in pointers.iter_mut().take(NDIR_BLOCKS).enumerate() {
@@ -371,15 +389,21 @@ async fn write_indirect_map<D: BlockDevice>(
     }
     fs.write_block(tind, &tind_buf).await?;
     pointers[NDIR_BLOCKS + 2] = tind as u32;
-
-    if logical < list.len() {
-        return Err(Error::Unsupported(format!(
-            "a {}-block file exceeds what triple indirection addresses at \
-             {block_size}-byte blocks",
-            list.len()
-        )));
-    }
+    debug_assert_eq!(logical, list.len(), "indirect_capacity let through too many blocks");
 
     inode.set_block_pointers(&pointers);
     Ok(meta_used)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indirect_capacity_is_twelve_plus_three_levels() {
+        // 1 KiB blocks: 256 pointers a block.
+        assert_eq!(indirect_capacity(256), 12 + 256 + 65_536 + 16_777_216);
+        // 4 KiB: 1024 — the 4 TiB ceiling of the format.
+        assert_eq!(indirect_capacity(1024), 12 + 1024 + (1 << 20) + (1 << 30));
+    }
 }
