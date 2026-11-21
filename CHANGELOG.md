@@ -3,6 +3,19 @@
 ## [Unreleased]
 
 ### 2026-11-21
+- **fix:** A failed operation gives back every block it took (#25, finding
+  4b2834a8dd5e). `alloc_blocks` is all or nothing; `write`, `append` and
+  `write_at` release the blocks they took and leave the file's old map, size
+  and contents' blocks in place; a streamed unpack (a file over 1 MiB) that
+  runs out of space or archive releases what it streamed and leaves the file
+  empty; the block map is built before the old one is freed, and a failed
+  build releases its own blocks; a growing directory, an index rebuild,
+  `mkdir`, `symlink`, `mknod` and new files give back their block and inode
+  when they cannot finish. A write bigger than the free space used to fail
+  having eaten the free space, its blocks marked in use with no owner.
+  Trade-off: rewriting a block-mapped file on a volume with no free block
+  left can now fail where reusing the old map's blocks would have fit.
+  Tests: `src/nospace_tests.rs`, each ending in a forced fsck.
 - **fix:** Tests: `review_tests` imports `BlockDevice` for `flush` and binds
   `Volume::open` before matching on it; the indexed-rename test reads `..`
   from the htree root, since the pinned mkfs-ext4 v4.1.3's indexed lookup

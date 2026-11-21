@@ -86,6 +86,13 @@ Every write keeps in step the things `fsck` checks: block and inode bitmaps,
 the group descriptors' free counts and directory tallies, the superblock's
 totals, and every metadata checksum.
 
+A write that fails — out of space, a device error, a truncated archive —
+gives back every block and inode it took, and a file being rewritten keeps
+its old block map until the new one is complete: the free counts after a
+failure are the counts before it (#25). Because the new map is built before
+the old one is freed, rewriting a block-mapped file on a volume with no free
+blocks at all can fail where reusing the old map's blocks would have fit.
+
 ## Verified
 
 The kernel is the judge, and it judges in a throwaway VM (`tests/vm/`):
@@ -136,6 +143,11 @@ with `mkfs-ext4`'s forced `fsck` (`tests/extent_tree.rs` does not yet, issue
 groups (1 GiB at 1 KiB blocks; 16 GiB sparse at 4 KiB), reopens, reads back,
 and checks with the forced `fsck` (and real `e2fsck -fn` on the 16 GiB image),
 which fails on the mkfs-ext4 v4.1.1 pin (#18).
+
+`src/nospace_tests.rs` runs writes, appends, `write_at`, a map that does not
+fit, streamed unpacks and new names into a volume without the room for them,
+and checks that the free counts come back unchanged and the forced `fsck` is
+clean (#25).
 
 ## Attributes
 

@@ -213,6 +213,19 @@ too, the finding is about the reader.
       new tests fail — 8 GiB read back as 0, a 189-byte target makes `s`
       into `a/s`, both PAX cases panic in the old parser. Released in
       **v1.8.5**.
+- [x] Issue #25 (major, finding 4b2834a8dd5e) — partial allocations leaked
+      when a multi-block request failed. `alloc_blocks` unwinds;
+      `Allocator::release` gives back unattached blocks on every failure
+      path in `write_data`, the streaming unpack, `map::write_block_list`
+      (new map built before the old is freed, so a failed build leaves the
+      old map whole), directory growth and index rebuild, `mkdir`,
+      `symlink`, `mknod` and new files (inode too). Tests in
+      `src/nospace_tests.rs` compare free counts before/after and end in a
+      forced fsck. Verified by sc-build: 726c1ab build, clippy `-D warnings`
+      clean, every test passes (6 new). Negative control (fixes reverted,
+      tests kept, branch `negctl-25` d1279ef): all 6 fail on the free-count
+      assertion. Trade-off: rewriting a block-mapped file on a volume with
+      zero free blocks may now fail where reusing its old map's blocks fit.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
