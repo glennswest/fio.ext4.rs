@@ -541,7 +541,8 @@ impl<D: BlockDevice> Volume<D> {
                 .await?;
             self.fs.stamp_dir_block(&mut buf, inum, inode.generation);
             self.fs.write_block(block, &buf).await?;
-            self.fs.write_inode(inum, &inode).await
+            self.fs.write_inode(inum, &inode).await?;
+            Ok::<(), Error>(())
         }
         .await;
         if let Err(e) = made {
@@ -1769,7 +1770,8 @@ impl<D: BlockDevice> Volume<D> {
                 map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &[block])
                     .await?;
                 inode.blocks = self.fs.block_size() as u64 / 512;
-                self.fs.write_inode(inum, &inode).await
+                self.fs.write_inode(inum, &inode).await?;
+                Ok::<(), Error>(())
             }
             .await;
             if let Err(e) = made {
