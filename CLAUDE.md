@@ -195,6 +195,18 @@ too, the finding is about the reader.
       do: sc-build main (build, test, clippy `-D warnings`); negative control
       `SC_BUILD_EXPECT_FAIL=1` on branch `wip/issue23-negative` (fe5804c:
       fixes reverted, tests kept); release v1.8.5; close #23.
+- [ ] Issue #24 (P1) — 4 review findings in `src/tar.rs`, 3 distinct.
+      1. `encode` bounds every text copy to its field: a link over 100
+         bytes no longer runs into `prefix` (f1dbfb8746d6); linkname keeps
+         the first 100 bytes, the full target goes in PAX `linkpath`.
+      2. Numbers never wrap: a value too big for its octal field is written
+         GNU base-256, and a size past 8 GiB − 1 also gets a PAX `size`
+         record (1b7fbba3316e). Header-level tests at the boundary, no
+         payload allocated.
+      3. `parse_pax` checks each record: digits-only length, checked
+         `at + len`, `space + 1 < end <= body.len()`, a closing newline and
+         a `=`; anything else is an error, never a panic (4f140b33ebe6,
+         8a75ec62f4e7).
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
