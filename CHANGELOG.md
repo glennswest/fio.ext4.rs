@@ -2,69 +2,15 @@
 
 ## [Unreleased]
 
+### 2026-11-21
+- **fix:** Tests: `review_tests` imports `BlockDevice` for `flush` and binds
+  `Volume::open` before matching on it; the indexed-rename test reads `..`
+  from the htree root, since the pinned mkfs-ext4 v4.1.3's indexed lookup
+  misses `..` (fixed upstream in mkfs.ext4.rs#41); a tar test spells NULs as
+  `\x00` for clippy's `octal_escapes` (#23, #24).
+- **chore:** Released v1.8.5.
+
 ### 2026-11-20
-- **fix:** tar output no longer wraps a file size at 8 GiB: a size past the
-  11-digit octal field gets a PAX `size` record and is written GNU base-256
-  in the header, as is any other number too big for its field (a device
-  major past 2097151). An 8 GiB file used to be announced as empty (#24,
-  1b7fbba3316e).
-- **fix:** tar output bounds every header text field to its own width: a
-  link target over 188 bytes used to run on into `prefix`, so the entry
-  read back under another path. The linkname keeps the first 100 bytes;
-  the target travels in full in PAX `linkpath` (#24, f1dbfb8746d6).
-- **fix:** A malformed PAX record — a length shorter than its own prefix, an
-  overflowing one, one past the header, no newline or no `key=value` — is an
-  `InvalidPath` error; it used to panic on a backwards slice (#24,
-  4f140b33ebe6, 8a75ec62f4e7). PAX integers (`size`, `uid`, `gid`) are read
-  exactly rather than through `f64`.
-- **fix:** Names that must never change are refused before anything is
-  allocated (#23, findings 3235dae01a21, 48f2ceb27e92): a final `.` or `..`,
-  a NUL, a name over 255 bytes. `rmdir("/d/.")` used to free `d` while `/d`
-  still named it.
-- **fix:** `rename` refuses a directory onto a non-directory
-  (`NotADirectory`) and a non-directory onto a directory (`IsADirectory`)
-  instead of deleting the destination (#23, ed975422b071).
-- **fix:** `write`, `write_with`, `append` and `write_at` refuse anything but
-  a regular file; they used to overwrite a symlink's target or a device's
-  number with a block map (#23, 9534db6f345d, 978776e2fe03).
-- **fix:** `symlink` refuses an empty target, a NUL, or one longer than
-  `min(block size, 4096) - 1` bytes before allocating; a target over one
-  block used to panic with the inode and block already taken (#23,
-  f737f3d6e9e4).
-- **fix:** A shared extended-attribute block (`h_refcount` > 1, as the
-  kernel leaves identical sets) is honoured: changing one inode's set gives
-  it a block of its own, and dropping a reference counts the block down and
-  frees it only at the last (#23, 12afcde622bc). It used to be rewritten
-  for every sharer, or freed under them.
-- **fix:** `i_blocks` keeps the attribute block when a file is rewritten,
-  appended, written at an offset or emptied, and when a directory grows or
-  its index is rebuilt (#23, 16cc8481732e, abb26904f7ff).
-- **fix:** Archive entries, hard-link targets and whiteout markers whose
-  path holds `..` (or a NUL) are refused before anything changes; `../victim`
-  unpacked into `/sandbox` used to replace `/victim` (#23, f12ada4fdef6,
-  d3df6a641775, 285fc60e938a). A whiteout naming `.` or `..` is refused too.
-- **fix:** OCI whiteouts hide only the lower layers: an entry this layer put
-  down earlier in the same archive survives a later `.wh.<name>` or
-  `.wh..wh..opq` (#23, 2f271dfded9e).
-- **fix:** Symlinks keep their owner, timestamp and extended attributes when
-  unpacked, and their attributes when packed (#23, 4d4d5c59ed24).
-- **perf:** Packing streams each regular file in 64 KiB pieces instead of
-  reading it whole, so memory no longer grows with the largest file (#23,
-  f06f9c5e6605).
-- **fix:** Moving a hash-indexed directory to another parent rewrites `..`
-  in its htree root and restamps the root's index checksum; it used to fail
-  decoding the root after the name had already moved, leaving `..` and both
-  parents' link counts wrong (#23, 78d76493e7c8, 83c24c7dbb2d). Where `..`
-  is, is settled before any name moves.
-- **perf:** `write`, `append` and `write_at` advance the allocation goal block
-  by block, so a file's allocation is linear rather than quadratic in its
-  length (#23, 402731625099).
-- **fix:** `Volume::open` (and so `open_cached` and the CLI) replays a
-  journal that needs recovery before anything can write, as a mount does,
-  and clears `needs_recovery`. It used to write over stale bitmaps that the
-  next mount's replay would then overwrite (#23, 27a761f4df5e). A journal it
-  cannot replay, or a replay that finds damage, is refused with
-  `Unsupported`; a stale flag on a filesystem without a journal is cleared.
 - **docs:** README's dependency snippet takes fio-ext4 v1.8.4 by `rev`
   (dee995d, its release commit).
 
@@ -99,6 +45,83 @@
 - **docs:** Refreshed README, CLAUDE.md and docs from the code for the
   changes since 2026-10-16 (only the #17 rev pin); no drift found. Promises
   the code does not yet keep are already issues: #11, #12, #14.
+
+## [v1.8.5] — 2026-11-21
+
+### Fixed
+- Tar output no longer wraps a file size at 8 GiB: a size past the
+  11-digit octal field gets a PAX `size` record and is written GNU base-256
+  in the header, as is any other number too big for its field (a device
+  major past 2097151). An 8 GiB file used to be announced as empty (#24,
+  1b7fbba3316e).
+- Tar output bounds every header text field to its own width: a
+  link target over 188 bytes used to run on into `prefix`, so the entry
+  read back under another path. The linkname keeps the first 100 bytes;
+  the target travels in full in PAX `linkpath` (#24, f1dbfb8746d6).
+- A malformed PAX record — a length shorter than its own prefix, an
+  overflowing one, one past the header, no newline or no `key=value` — is an
+  `InvalidPath` error; it used to panic on a backwards slice (#24,
+  4f140b33ebe6, 8a75ec62f4e7). PAX integers (`size`, `uid`, `gid`) are read
+  exactly rather than through `f64`.
+- Names that must never change are refused before anything is
+  allocated (#23, findings 3235dae01a21, 48f2ceb27e92): a final `.` or `..`,
+  a NUL, a name over 255 bytes. `rmdir("/d/.")` used to free `d` while `/d`
+  still named it.
+- `rename` refuses a directory onto a non-directory
+  (`NotADirectory`) and a non-directory onto a directory (`IsADirectory`)
+  instead of deleting the destination (#23, ed975422b071).
+- `write`, `write_with`, `append` and `write_at` refuse anything but
+  a regular file; they used to overwrite a symlink's target or a device's
+  number with a block map (#23, 9534db6f345d, 978776e2fe03).
+- `symlink` refuses an empty target, a NUL, or one longer than
+  `min(block size, 4096) - 1` bytes before allocating; a target over one
+  block used to panic with the inode and block already taken (#23,
+  f737f3d6e9e4).
+- A shared extended-attribute block (`h_refcount` > 1, as the
+  kernel leaves identical sets) is honoured: changing one inode's set gives
+  it a block of its own, and dropping a reference counts the block down and
+  frees it only at the last (#23, 12afcde622bc). It used to be rewritten
+  for every sharer, or freed under them.
+- `i_blocks` keeps the attribute block when a file is rewritten,
+  appended, written at an offset or emptied, and when a directory grows or
+  its index is rebuilt (#23, 16cc8481732e, abb26904f7ff).
+- Archive entries, hard-link targets and whiteout markers whose
+  path holds `..` (or a NUL) are refused before anything changes; `../victim`
+  unpacked into `/sandbox` used to replace `/victim` (#23, f12ada4fdef6,
+  d3df6a641775, 285fc60e938a). A whiteout naming `.` or `..` is refused too.
+- OCI whiteouts hide only the lower layers: an entry this layer put
+  down earlier in the same archive survives a later `.wh.<name>` or
+  `.wh..wh..opq` (#23, 2f271dfded9e).
+- Symlinks keep their owner, timestamp and extended attributes when
+  unpacked, and their attributes when packed (#23, 4d4d5c59ed24).
+- Moving a hash-indexed directory to another parent rewrites `..`
+  in its htree root and restamps the root's index checksum; it used to fail
+  decoding the root after the name had already moved, leaving `..` and both
+  parents' link counts wrong (#23, 78d76493e7c8, 83c24c7dbb2d). Where `..`
+  is, is settled before any name moves.
+- `Volume::open` (and so `open_cached` and the CLI) replays a
+  journal that needs recovery before anything can write, as a mount does,
+  and clears `needs_recovery`. It used to write over stale bitmaps that the
+  next mount's replay would then overwrite (#23, 27a761f4df5e). A journal it
+  cannot replay, or a replay that finds damage, is refused with
+  `Unsupported`; a stale flag on a filesystem without a journal is cleared.
+
+### Changed
+- Packing streams each regular file in 64 KiB pieces instead of
+  reading it whole, so memory no longer grows with the largest file (#23,
+  f06f9c5e6605).
+- `write`, `append` and `write_at` advance the allocation goal block
+  by block, so a file's allocation is linear rather than quadratic in its
+  length (#23, 402731625099).
+
+### Added
+- `src/review_tests.rs`: 19 unit tests for the #23 findings, each ending in a
+  forced fsck. With the #23 fixes reverted all 19 fail, each on the bug it
+  names.
+- `src/tar.rs`: header-level tests for sizes across 8 GiB (no payload
+  allocated), device numbers past octal, link targets of 100–1000 bytes,
+  and 14 malformed PAX records directly and through the reader. With the
+  #24 fixes reverted all five new tests fail.
 
 ## [v1.8.4] — 2026-11-20
 
