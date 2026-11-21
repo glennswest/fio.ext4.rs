@@ -222,6 +222,9 @@ pub struct PackReport {
     pub xattrs: u64,
     /// Bytes of file content read.
     pub bytes: u64,
+    /// Unix sockets left out: tar has no type for one (GNU tar skips them
+    /// too), and writing a FIFO instead would change what the name is.
+    pub sockets_skipped: u64,
 }
 
 /// What a directory listing tells you about one name.
@@ -1121,10 +1124,9 @@ impl<D: BlockDevice> Volume<D> {
         // the archive lists them in (finding 2f271dfded9e).
         let mut added: BTreeSet<String> = BTreeSet::new();
 
+        let root = if base.is_empty() { "/".to_string() } else { format!("/{base}") };
+
         while let Some(header) = reader.next().await? {
-            if header.path.is_empty() {
-                continue;
-            }
             let attrs = Attrs {
                 mode: header.mode,
                 uid: header.uid,
@@ -1135,12 +1137,20 @@ impl<D: BlockDevice> Volume<D> {
             // 285fc60e938a).
             let rel = contained(&header.path)?;
             if rel.is_empty() {
-                // `.` — the destination itself. Only its attributes mean
-                // anything, and they wait with the other directories'.
-                if header.kind == tar::EntryKind::Directory {
-                    deferred.push((at(""), attrs, header.mtime, header.xattrs.clone()));
-                    report.directories += 1;
+                // `./` (or `/`, or `.`) — the destination itself. Its mode,
+                // owner, time and labels wait with the other directories'
+                // (finding 86c5829f4bac); they used to be dropped, because
+                // the reader turns `./` into an empty path and an empty path
+                // was skipped. Only a directory can be the root: anything
+                // else with no name is a malformed archive.
+                if header.kind != tar::EntryKind::Directory {
+                    return Err(Error::InvalidPath(format!(
+                        "archive entry {:?} has no name but is not a directory",
+                        header.path
+                    )));
                 }
+                deferred.push((root.clone(), attrs, header.mtime, header.xattrs.clone()));
+                report.directories += 1;
                 continue;
             }
             let (parent, name) = match rel.rfind('/') {
@@ -1245,9 +1255,9 @@ impl<D: BlockDevice> Volume<D> {
                     report.xattrs += header.xattrs.len() as u64;
                     self.write_xattrs(&path, &to_xattrs(&header.xattrs)).await?;
                 }
-                if header.mtime != 0 {
-                    self.set_times(&path, header.mtime).await?;
-                }
+                // Zero is the epoch, which reproducible archives use, not
+                // "no time": applied like any other (finding a343a379bfde).
+                self.set_times(&path, header.mtime).await?;
             }
         }
 
@@ -1261,9 +1271,7 @@ impl<D: BlockDevice> Volume<D> {
             // labels a lower layer put on the same directory.
             report.xattrs += xattrs.len() as u64;
             self.write_xattrs(&path, &to_xattrs(&xattrs)).await?;
-            if mtime != 0 {
-                self.set_times(&path, mtime).await?;
-            }
+            self.set_times(&path, mtime).await?;
         }
 
         Ok(report)
@@ -1520,6 +1528,35 @@ impl<D: BlockDevice> Volume<D> {
         // link rather than a second copy of the contents.
         let mut seen: BTreeMap<u32, String> = BTreeMap::new();
 
+        // The root itself, as `./`, so its mode, owner, time and labels make
+        // the round trip — `tar -C root -cf - .` does the same, and the
+        // unpack side applies `./` to the destination (finding 86c5829f4bac).
+        {
+            let at = if root.is_empty() { "/" } else { root };
+            let stat = self.stat(at).await?;
+            if !stat.is_dir() {
+                return Err(Error::NotADirectory(at.into()));
+            }
+            let header = tar::Header {
+                path: "./".into(),
+                kind: tar::EntryKind::Directory,
+                mode: stat.mode & 0o7777,
+                uid: stat.uid,
+                gid: stat.gid,
+                mtime: stat.mtime,
+                xattrs: self
+                    .list_xattrs(at)
+                    .await?
+                    .into_iter()
+                    .map(|x| (x.name, x.value))
+                    .collect(),
+                ..Default::default()
+            };
+            report.xattrs += header.xattrs.len() as u64;
+            writer.append(&header, &[]).await?;
+            report.directories += 1;
+        }
+
         // An explicit stack rather than recursion: an async fn that calls
         // itself needs boxing, and a deep tree would recurse as deep. Each
         // level holds its remaining names in reverse, so popping walks the
@@ -1596,7 +1633,18 @@ impl<D: BlockDevice> Volume<D> {
                         // Its labels go with it (finding 4d4d5c59ed24).
                         report.symlinks += 1;
                     }
-                    mode::IFCHR | mode::IFBLK | mode::IFIFO | mode::IFSOCK => {
+                    mode::IFSOCK => {
+                        // Tar has no type for a socket, and one is only ever
+                        // a rendezvous left by a process that bound it. GNU
+                        // tar skips them ("socket ignored"); so does this,
+                        // and counts them. It used to write a FIFO, which
+                        // unpacks as a pipe a client then blocks on
+                        // (finding 408eef6b0a6d).
+                        tracing::warn!(path = %path, "socket not packed: tar has no type for it");
+                        report.sockets_skipped += 1;
+                        continue;
+                    }
+                    mode::IFCHR | mode::IFBLK | mode::IFIFO => {
                         let (major, minor) = self.device_numbers(&path).await?;
                         header.kind = match stat.mode & mode::IFMT {
                             mode::IFCHR => tar::EntryKind::CharDevice,
@@ -2084,6 +2132,11 @@ impl<D: BlockDevice> Volume<D> {
                 self.fs
                     .stamp_dir_block(&mut buf, dir_ino, dir_inode.generation);
                 self.fs.write_block(block, &buf).await?;
+                // A new name changes the directory, room or no room
+                // (finding bf314aa4aaa3).
+                dir_inode.mtime = self.now;
+                dir_inode.ctime = self.now;
+                self.fs.write_inode(dir_ino, &dir_inode).await?;
                 return Ok(());
             }
         }

@@ -314,6 +314,11 @@ impl<S: Source> Reader<S> {
             }
             empty_blocks = 0;
 
+            // Checked before a single field is believed: a damaged name, type
+            // or size would otherwise send the entry to the wrong path, skip
+            // it, or misalign every header after it (finding 807082f9d565).
+            verify_checksum(&block)?;
+
             let size = octal(&block[124..136])?;
             let typeflag = block[156];
 
@@ -735,7 +740,43 @@ fn split_name(path: &str) -> (&str, &str) {
             return (&path[i + 1..], &path[..i]);
         }
     }
-    (&path[path.len() - 100..], "")
+    // No split fits: the PAX `path` record carries the whole name, and the
+    // header keeps the last 100 bytes or fewer — starting on a character,
+    // since a byte offset inside a multi-byte one panics the slice
+    // (findings a9eb4427e12c, c343252b4b99).
+    let mut start = path.len() - 100;
+    while !path.is_char_boundary(start) {
+        start += 1;
+    }
+    (&path[start..], "")
+}
+
+/// Check a header block's checksum: the sum of its bytes with the checksum
+/// field read as eight spaces. Unsigned is the standard; signed is what some
+/// old writers computed, and every reader since accepts either.
+fn verify_checksum(block: &[u8; BLOCK]) -> Result<()> {
+    let stored = octal(&block[148..156])?;
+    let field_as_spaces = 8 * b' ' as u64;
+    let unsigned: u64 = block[..148]
+        .iter()
+        .chain(&block[156..])
+        .map(|&b| b as u64)
+        .sum::<u64>()
+        + field_as_spaces;
+    let signed: i64 = block[..148]
+        .iter()
+        .chain(&block[156..])
+        .map(|&b| b as i8 as i64)
+        .sum::<i64>()
+        + field_as_spaces as i64;
+    if stored == unsigned || stored as i64 == signed {
+        Ok(())
+    } else {
+        Err(Error::InvalidPath(format!(
+            "tar header checksum is {stored:o}, but the header sums to {unsigned:o}: \
+             the archive is damaged"
+        )))
+    }
 }
 
 /// The last component of a path, for naming a PAX header after its entry.
@@ -881,6 +922,61 @@ fn parse_pax(body: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
 
 #[cfg(test)]
 mod tests {
+    // ---- #28: checksums (807082f9d565), long UTF-8 names (a9eb4427e12c,
+    // c343252b4b99) ----
+
+    #[tokio::test]
+    async fn a_damaged_header_is_refused_before_it_is_believed() {
+        let good = build(&[(Header::file("etc/passwd", 5), b"root\n")]).await;
+        assert_eq!(read(&good).await.unwrap()[0].header.path, "etc/passwd");
+
+        // One bit in the name, one in the size, one in the type: each is a
+        // checksum error, never an entry under another name or length.
+        for (at, what) in [(0usize, "name"), (124 + 10, "size"), (156, "type")] {
+            let mut bad = good.clone();
+            bad[at] ^= 0x01;
+            let e = read(&bad).await.unwrap_err();
+            assert!(e.to_string().contains("checksum"), "{what}: {e}");
+        }
+
+        // A checksum written by an old signed-char writer still reads.
+        let mut high = Header::file("caf\u{e9}", 0);
+        high.mtime = 1;
+        let mut block = encode(&high, b'0');
+        let signed: i64 = block
+            .iter()
+            .enumerate()
+            .map(|(i, &b)| if (148..156).contains(&i) { 32 } else { b as i8 as i64 })
+            .sum();
+        assert!(signed != block.iter().map(|&b| b as i64).sum::<i64>(), "needs a high byte");
+        let text = format!("{signed:06o}\0 ");
+        block[148..156].copy_from_slice(text.as_bytes());
+        let mut archive = block.to_vec();
+        archive.extend_from_slice(&[0u8; 2 * BLOCK]);
+        assert_eq!(read(&archive).await.unwrap()[0].header.path, "caf\u{e9}");
+    }
+
+    #[tokio::test]
+    async fn long_multibyte_names_round_trip_without_a_panic() {
+        let names = [
+            // 51 two-byte characters and an `a`: 103 bytes, the last 100
+            // starting inside a character.
+            format!("{}a", "\u{e9}".repeat(51)),
+            // 34 three-byte characters: 102 bytes.
+            "\u{20ac}".repeat(34),
+            // The same under a directory too long to split off.
+            format!("{}/{}", "d".repeat(160), "\u{e9}".repeat(51)),
+        ];
+        for name in &names {
+            let archive = build(&[(Header::file(name.as_str(), 1), b"x")]).await;
+            let back = read(&archive).await.unwrap();
+            assert_eq!(&back[0].header.path, name);
+            assert_eq!(back[0].data, b"x");
+            let (field, prefix) = split_name(name);
+            assert!(field.len() <= 100 && prefix.len() <= 155);
+        }
+    }
+
     use super::*;
 
     /// Feeds a stream a few bytes at a time, the way a pipe does — so a reader

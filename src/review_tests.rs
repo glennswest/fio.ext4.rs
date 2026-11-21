@@ -778,3 +778,149 @@ async fn a_recovery_flag_without_a_journal_is_cleared() {
     }
     assert_clean(&dev, "after clearing a stale flag").await;
 }
+
+// ---- #28: minor findings ----
+
+/// Finding 408eef6b0a6d: a socket is left out of an archive and counted,
+/// never written as a FIFO.
+#[tokio::test]
+async fn a_socket_is_skipped_by_pack_not_turned_into_a_fifo() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    {
+        let mut vol = open(&dev).await;
+        vol.mkdir("/run").await.unwrap();
+        vol.mknod("/run/sock", Special::Socket, &Attrs::mode(0o666)).await.unwrap();
+        vol.mknod("/run/pipe", Special::Fifo, &Attrs::mode(0o644)).await.unwrap();
+
+        let mut sink = Recording::default();
+        let report = vol.pack_tar_to(&mut sink, "/").await.unwrap();
+        assert_eq!(report.sockets_skipped, 1);
+        assert_eq!(report.devices, 1, "the FIFO is still packed");
+        let entries = tar::read(&sink.bytes).await.unwrap();
+        assert!(
+            entries.iter().all(|e| e.header.path != "run/sock"),
+            "the socket was packed"
+        );
+        let pipe = entries.iter().find(|e| e.header.path == "run/pipe").unwrap();
+        assert_eq!(pipe.header.kind, EntryKind::Fifo);
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after packing a socket").await;
+}
+
+/// Finding 86c5829f4bac: the archive's root entry carries the destination's
+/// own mode, owner, time and labels, both ways.
+#[tokio::test]
+async fn the_root_entry_s_attributes_make_the_round_trip() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    let label = b"system_u:object_r:var_t:s0".to_vec();
+    {
+        let mut vol = open(&dev).await;
+        let root = Header {
+            path: "./".into(),
+            kind: EntryKind::Directory,
+            mode: 0o750,
+            uid: 1000,
+            gid: 1001,
+            mtime: 1_600_000_000,
+            xattrs: vec![("security.selinux".into(), label.clone())],
+            ..Default::default()
+        };
+        let mut f = tar_file("./inner");
+        f.size = 2;
+        let bytes = archive(&[(root, &b""[..]), (f, b"hi")]).await;
+        vol.unpack_tar_into(tar::Bytes::new(&bytes), "/dest").await.unwrap();
+
+        let stat = vol.stat("/dest").await.unwrap();
+        assert_eq!(stat.mode & 0o7777, 0o750);
+        assert_eq!((stat.uid, stat.gid, stat.mtime), (1000, 1001, 1_600_000_000));
+        assert_eq!(
+            vol.get_xattr("/dest", "security.selinux").await.unwrap(),
+            Some(label.clone())
+        );
+        assert_eq!(vol.read("/dest/inner").await.unwrap(), b"hi");
+
+        // Packing the subtree emits its root first, and that root unpacks
+        // onto a second destination with the same attributes.
+        let packed = vol.pack_tar("/dest").await.unwrap();
+        let entries = tar::read(&packed).await.unwrap();
+        let first = &entries[0].header;
+        assert_eq!(first.path, "", "the root entry, `./`, comes first");
+        assert_eq!(first.kind, EntryKind::Directory);
+        assert_eq!((first.mode, first.uid, first.gid), (0o750, 1000, 1001));
+        assert_eq!(first.mtime, 1_600_000_000);
+        assert_eq!(first.xattrs, vec![("security.selinux".to_string(), label.clone())]);
+        vol.unpack_tar_into(tar::Bytes::new(&packed), "/copy").await.unwrap();
+        let copy = vol.stat("/copy").await.unwrap();
+        assert_eq!((copy.mode & 0o7777, copy.uid, copy.mtime), (0o750, 1000, 1_600_000_000));
+
+        // A nameless entry that is not a directory is malformed.
+        let mut nameless = tar_file("./");
+        nameless.size = 0;
+        let bad = archive(&[(nameless, &b""[..])]).await;
+        let e = vol.unpack_tar_into(tar::Bytes::new(&bad), "/dest").await.unwrap_err();
+        assert!(matches!(e, Error::InvalidPath(_)), "{e}");
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after root entries both ways").await;
+}
+
+/// Finding a343a379bfde: an mtime of 0 is the epoch, applied as recorded.
+#[tokio::test]
+async fn an_epoch_timestamp_is_kept_not_replaced_by_now() {
+    let dev = fresh(Profile::Ext4, 4096, 32 * MIB).await;
+    {
+        let mut vol = open(&dev).await;
+        let mut d = tar_file("d");
+        d.kind = EntryKind::Directory;
+        d.mtime = 0;
+        let mut f = tar_file("d/f");
+        f.mtime = 0;
+        f.size = 1;
+        let bytes = archive(&[(d, &b""[..]), (f, b"x")]).await;
+        vol.unpack_tar(&bytes).await.unwrap();
+        assert_eq!(vol.stat("/d").await.unwrap().mtime, 0);
+        assert_eq!(vol.stat("/d/f").await.unwrap().mtime, 0);
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after epoch timestamps").await;
+}
+
+/// Finding bf314aa4aaa3: a name added to a directory block with room in it
+/// still moves the directory's mtime and ctime.
+async fn names_move_the_parent_s_times(profile: Profile) {
+    let dev = fresh(profile, 4096, 32 * MIB).await;
+    {
+        let mut vol = open(&dev).await;
+        vol.mkdir("/d").await.unwrap();
+        vol.write("/target", b"t").await.unwrap();
+        let mut at = 1_700_000_000;
+        for what in ["write", "symlink", "link", "mknod"] {
+            at += 100;
+            vol.set_time(at);
+            let path = format!("/d/{what}");
+            match what {
+                "write" => vol.write(&path, b"x").await.map(|_| ()),
+                "symlink" => vol.symlink(&path, "target").await.map(|_| ()),
+                "link" => vol.link("/target", &path).await.map(|_| ()),
+                _ => vol.mknod(&path, Special::Fifo, &Attrs::mode(0o644)).await.map(|_| ()),
+            }
+            .unwrap();
+            let inum = vol.lookup("/d").await.unwrap();
+            let inode = vol.fs.read_inode(inum).await.unwrap();
+            assert_eq!((inode.mtime, inode.ctime), (at, at), "{what} left /d's times alone");
+        }
+        vol.flush().await.unwrap();
+    }
+    assert_clean(&dev, "after names added to a roomy directory").await;
+}
+
+#[tokio::test]
+async fn names_move_the_parent_s_times_ext4() {
+    names_move_the_parent_s_times(Profile::Ext4).await;
+}
+
+#[tokio::test]
+async fn names_move_the_parent_s_times_ext2() {
+    names_move_the_parent_s_times(Profile::Ext2).await;
+}

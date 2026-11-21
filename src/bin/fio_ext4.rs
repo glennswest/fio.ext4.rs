@@ -240,6 +240,12 @@ async fn main() -> anyhow::Result<()> {
                 report.devices,
                 report.xattrs
             );
+            if report.sockets_skipped > 0 {
+                eprintln!(
+                    "{} sockets skipped: tar has no type for a socket",
+                    report.sockets_skipped
+                );
+            }
         }
 
         Command::Stat { path } => {

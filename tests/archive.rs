@@ -190,7 +190,9 @@ async fn names_come_out_depth_first_and_sorted() {
     // Depth-first in sorted order — a directory is immediately followed by
     // what is inside it, which is what every other tar produces and what makes
     // two runs over the same tree byte-identical.
-    assert_eq!(names, ["a", "a/m", "a/z", "a/z/deep", "b", "b/only"]);
+    // The root comes first, as `./` (read back as the empty path), so its
+    // own attributes travel too (finding 86c5829f4bac).
+    assert_eq!(names, ["", "a", "a/m", "a/z", "a/z/deep", "b", "b/only"]);
 }
 
 #[tokio::test]
