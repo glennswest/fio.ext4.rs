@@ -189,6 +189,12 @@ too, the finding is about the reader.
          advances its allocation goal (402731625099).
       5. `Volume::open` replays a journal that needs recovery, as a mount
          does, and refuses one it cannot replay (27a761f4df5e).
+      State 2026-11-20: all five groups on main (e707097, 0a75d1e, 49bcfb7,
+      93c436d, 413c30c, docs 0668e39); the first sc-build of the tests found
+      two compile errors in `src/review_tests.rs`, fixed in 71dbd31. Still to
+      do: sc-build main (build, test, clippy `-D warnings`); negative control
+      `SC_BUILD_EXPECT_FAIL=1` on branch `wip/issue23-negative` (fe5804c:
+      fixes reverted, tests kept); release v1.8.5; close #23.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.
