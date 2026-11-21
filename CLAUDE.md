@@ -238,6 +238,19 @@ too, the finding is about the reader.
       5872f59 build, clippy `-D warnings` clean, every test passes.
       Negative control (free-first order restored, branch `negctl-26`
       5ff748c): the test fails on the free count.
+- [x] Issue #28 — 8 minor review findings, 7 distinct, fixed in d122485:
+      sockets skipped by pack and counted (`PackReport::sockets_skipped`,
+      408eef6b0a6d); tar header checksum verified, unsigned or signed
+      (807082f9d565); `./` root entry applied on unpack and emitted first by
+      pack (86c5829f4bac); mtime 0 applied (a343a379bfde); `split_name`
+      falls back on a char boundary (a9eb4427e12c, c343252b4b99); the
+      existing-block path of `link_into` moves the parent's times
+      (bf314aa4aaa3); c876c7b59c99 was f737f3d6e9e4 (#23). Tests: five in
+      `src/review_tests.rs`, two in `src/tar.rs`; `tests/archive.rs`'s
+      order test now expects the root entry. Verified by sc-build:
+      d122485 build, clippy `-D warnings` clean, every test passes.
+      Negative control (old behaviours back, tests kept, branch
+      `negctl-28` 0bb114a): all seven new tests fail, each on its bug.
 - [ ] Issue #11 — `tests/extent_tree.rs` ends without a forced fsck.
 - [ ] Issue #12 — no kernel check of `dir_index`; add a 1 KiB / 4 KiB,
       ~7,500-name case to `tests/vm/init.sh`.

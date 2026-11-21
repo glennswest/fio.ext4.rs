@@ -3,6 +3,26 @@
 ## [Unreleased]
 
 ### 2026-11-21
+- **fix:** The minor findings of #28:
+  - packing skips a Unix socket and counts it in the new
+    `PackReport::sockets_skipped` (the CLI says so); it used to be written
+    as a FIFO and unpack as a pipe (408eef6b0a6d);
+  - `tar::Reader` verifies every header's checksum (unsigned, or the signed
+    sum old writers used) before believing a field; a damaged header is an
+    `InvalidPath` error (807082f9d565);
+  - an archive's root entry `./` applies its mode, owner, time and xattrs
+    to the destination, a nameless entry that is not a directory is
+    refused, and packing emits `./` first, so a subtree's root makes the
+    round trip (86c5829f4bac). Packed archives now begin with `./`;
+  - an mtime of 0 is applied, not replaced by the time of the unpack
+    (a343a379bfde);
+  - a name over 100 bytes with no usable split no longer panics when the
+    last 100 bytes start inside a UTF-8 character (a9eb4427e12c,
+    c343252b4b99);
+  - adding a name to a directory block with room in it moves the
+    directory's mtime and ctime, as growing it already did (bf314aa4aaa3);
+  - c876c7b59c99 (a symlink target over one block) was already fixed by
+    f737f3d6e9e4 (#23).
 - **fix:** A block map that cannot be rebuilt leaves the live one whole (#26,
   finding af0f7637339c). The new tree is built before the old one is freed
   (57b7c46, with #25); now nothing in the inode changes until it is complete

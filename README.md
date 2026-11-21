@@ -170,7 +170,13 @@ A tar archive can be streamed straight into a filesystem, or read back out of
 one. Everything an image needs survives: modes and the setuid bit, ownership,
 symlinks, hard links, device nodes, timestamps, and extended attributes
 including SELinux labels — on symlinks too, which keep their owner, time and
-labels both ways.
+labels both ways. An archive's root entry, `./`, carries the destination
+directory's own mode, owner, time and labels, and packing emits it first, as
+`tar -C root -cf - .` does. A timestamp of 0 is the epoch and is kept, so
+a reproducible archive unpacks the same whenever it is unpacked. A Unix
+socket has no tar type: packing leaves it out, as GNU tar does, and counts it
+in `PackReport::sockets_skipped`, rather than writing a FIFO in its place
+(#28).
 
 An archive is untrusted input. An entry, hard-link target or whiteout whose
 path holds a `..` component (or a NUL) is refused with `InvalidPath` before
@@ -178,7 +184,8 @@ anything is looked up or changed, so nothing in an archive reaches outside
 the directory it is unpacked into.
 A PAX extended header whose records are malformed (a length that does not
 cover its own record or runs past the header, no newline, no `key=value`)
-fails the read with `InvalidPath`.
+fails the read with `InvalidPath`, and so does a header whose checksum does
+not match its bytes: no field of a damaged header is believed (#28).
 
 Archives written here are POSIX pax. A path or link target over 100 bytes,
 a file over 8 GiB − 1, a uid or gid past 2097151 and every extended
