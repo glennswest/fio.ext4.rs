@@ -164,6 +164,15 @@ An archive is untrusted input. An entry, hard-link target or whiteout whose
 path holds a `..` component (or a NUL) is refused with `InvalidPath` before
 anything is looked up or changed, so nothing in an archive reaches outside
 the directory it is unpacked into.
+A PAX extended header whose records are malformed (a length that does not
+cover its own record or runs past the header, no newline, no `key=value`)
+fails the read with `InvalidPath`.
+
+Archives written here are POSIX pax. A path or link target over 100 bytes,
+a file over 8 GiB − 1, a uid or gid past 2097151 and every extended
+attribute go in a PAX record ahead of the entry; the ustar fields keep what
+fits, each cut to its own width, and a number too big for its octal field
+is written in GNU base-256 rather than wrapped.
 
 ```rust
 use fio_ext4::archive::{self, PackOptions, UnpackOptions};

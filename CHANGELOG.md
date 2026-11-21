@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### 2026-11-20
+- **fix:** tar output no longer wraps a file size at 8 GiB: a size past the
+  11-digit octal field gets a PAX `size` record and is written GNU base-256
+  in the header, as is any other number too big for its field (a device
+  major past 2097151). An 8 GiB file used to be announced as empty (#24,
+  1b7fbba3316e).
+- **fix:** tar output bounds every header text field to its own width: a
+  link target over 188 bytes used to run on into `prefix`, so the entry
+  read back under another path. The linkname keeps the first 100 bytes;
+  the target travels in full in PAX `linkpath` (#24, f1dbfb8746d6).
+- **fix:** A malformed PAX record — a length shorter than its own prefix, an
+  overflowing one, one past the header, no newline or no `key=value` — is an
+  `InvalidPath` error; it used to panic on a backwards slice (#24,
+  4f140b33ebe6, 8a75ec62f4e7). PAX integers (`size`, `uid`, `gid`) are read
+  exactly rather than through `f64`.
 - **fix:** Names that must never change are refused before anything is
   allocated (#23, findings 3235dae01a21, 48f2ceb27e92): a final `.` or `..`,
   a NUL, a name over 255 bytes. `rmdir("/d/.")` used to free `d` while `/d`

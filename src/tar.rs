@@ -382,9 +382,15 @@ impl<S: Source> Reader<S> {
             };
 
             let number = |key: &str, fallback: u64| -> u64 {
+                // An integer exactly; a fractional one (mtime may be) via f64.
                 get(key)
-                    .and_then(|v| String::from_utf8_lossy(v).trim().parse::<f64>().ok())
-                    .map(|n| n as u64)
+                    .and_then(|v| {
+                        let text = String::from_utf8_lossy(v);
+                        let text = text.trim();
+                        text.parse::<u64>()
+                            .ok()
+                            .or_else(|| text.parse::<f64>().ok().map(|n| n as u64))
+                    })
                     .unwrap_or(fallback)
             };
 
@@ -558,6 +564,11 @@ impl<K: Sink> Writer<K> {
         if header.link.len() > 100 {
             records.push(("linkpath".into(), header.link.clone().into_bytes()));
         }
+        // 11 octal digits hold 8 GiB − 1. Past that the header carries the
+        // size in GNU base-256 (see `encode`), and PAX says it portably.
+        if header.kind == EntryKind::File && header.size > OCTAL_SIZE_MAX {
+            records.push(("size".into(), header.size.to_string().into_bytes()));
+        }
         if header.uid > 0o7777777 {
             records.push(("uid".into(), header.uid.to_string().into_bytes()));
         }
@@ -652,20 +663,33 @@ impl<K: Sink> Writer<K> {
 fn encode(header: &Header, typeflag: u8) -> [u8; BLOCK] {
     let mut block = [0u8; BLOCK];
 
-    // A path too long for the fixed fields is truncated here, having already
-    // been written out in full as a PAX record.
+    // A path or link target too long for its field is cut to the field here,
+    // having already been written out in full as a PAX record. Each copy is
+    // bounded by its own field, so nothing runs on into the next one.
     let (name, prefix) = split_name(&header.path);
-    let put = |block: &mut [u8; BLOCK], at: usize, text: &[u8]| {
-        let n = text.len().min(block.len() - at);
+    let put = |block: &mut [u8; BLOCK], at: usize, width: usize, text: &[u8]| {
+        let n = text.len().min(width);
         block[at..at + n].copy_from_slice(&text[..n]);
     };
+    // Octal digits and a NUL when the value fits. When it does not, GNU
+    // base-256 — the top bit of the first byte set, the value big-endian in
+    // the rest — which `octal` reads back; never the low digits alone.
     let put_octal = |block: &mut [u8; BLOCK], at: usize, width: usize, value: u64| {
-        let text = format!("{:0>width$o}", value, width = width - 1);
-        let text = &text[text.len().saturating_sub(width - 1)..];
-        block[at..at + width - 1].copy_from_slice(text.as_bytes());
+        let digits = width - 1;
+        if value < 1u64 << (3 * digits) {
+            let text = format!("{value:0>digits$o}");
+            block[at..at + digits].copy_from_slice(text.as_bytes());
+        } else {
+            let field = &mut block[at..at + width];
+            field.fill(0);
+            let bytes = value.to_be_bytes();
+            let n = bytes.len().min(width - 1);
+            field[width - n..].copy_from_slice(&bytes[bytes.len() - n..]);
+            field[0] |= 0x80;
+        }
     };
 
-    put(&mut block, 0, name.as_bytes());
+    put(&mut block, 0, 100, name.as_bytes());
     put_octal(&mut block, 100, 8, header.mode as u64);
     put_octal(&mut block, 108, 8, header.uid.min(0o7777777) as u64);
     put_octal(&mut block, 116, 8, header.gid.min(0o7777777) as u64);
@@ -681,12 +705,12 @@ fn encode(header: &Header, typeflag: u8) -> [u8; BLOCK] {
     );
     put_octal(&mut block, 136, 12, header.mtime as u64);
     block[156] = typeflag;
-    put(&mut block, 157, header.link.as_bytes());
-    put(&mut block, 257, b"ustar\0");
-    put(&mut block, 263, b"00");
+    put(&mut block, 157, 100, header.link.as_bytes());
+    put(&mut block, 257, 6, b"ustar\0");
+    put(&mut block, 263, 2, b"00");
     put_octal(&mut block, 329, 8, header.major as u64);
     put_octal(&mut block, 337, 8, header.minor as u64);
-    put(&mut block, 345, prefix.as_bytes());
+    put(&mut block, 345, 155, prefix.as_bytes());
 
     // The checksum is computed with its own field read as spaces, then written
     // back into it as six octal digits, a NUL and a space.
@@ -696,6 +720,9 @@ fn encode(header: &Header, typeflag: u8) -> [u8; BLOCK] {
     block[148..156].copy_from_slice(text.as_bytes());
     block
 }
+
+/// The largest size the 12-byte octal field holds: 11 digits, 8 GiB − 1.
+const OCTAL_SIZE_MAX: u64 = (1 << 33) - 1;
 
 /// Split a path into ustar's `name` and `prefix` fields.
 fn split_name(path: &str) -> (&str, &str) {
@@ -795,35 +822,58 @@ fn octal(field: &[u8]) -> Result<u64> {
 }
 
 /// Parse a PAX extended header: repeated `LEN key=value\n` records.
+///
+/// The archive controls every byte of this, so each record is checked before
+/// it is sliced: a length of decimal digits that covers its own prefix, a
+/// `key=value` and the closing newline, and stays inside the body. Anything
+/// else is a malformed archive, reported as an error. NUL padding after the
+/// last record is tolerated.
 fn parse_pax(body: &[u8]) -> Result<BTreeMap<String, Vec<u8>>> {
+    let malformed = |at: usize, why: &str| {
+        Error::InvalidPath(format!("malformed PAX record at byte {at}: {why}"))
+    };
     let mut out = BTreeMap::new();
     let mut at = 0usize;
 
     while at < body.len() {
-        // The record opens with its own total length in decimal.
-        let space = match body[at..].iter().position(|&b| b == b' ') {
-            Some(i) => at + i,
-            None => break,
-        };
-        let len: usize = String::from_utf8_lossy(&body[at..space])
-            .trim()
-            .parse()
-            .map_err(|_| Error::InvalidPath("malformed PAX record length".into()))?;
-        if len == 0 || at + len > body.len() {
+        if body[at..].iter().all(|&b| b == 0) {
             break;
         }
-
-        let record = &body[space + 1..at + len];
-        if let Some(eq) = record.iter().position(|&b| b == b'=') {
-            let key = String::from_utf8_lossy(&record[..eq]).into_owned();
-            let mut value = record[eq + 1..].to_vec();
-            // Each record ends with a newline that is not part of the value.
-            if value.last() == Some(&b'\n') {
-                value.pop();
-            }
-            out.insert(key, value);
+        // The record opens with its own total length in decimal.
+        let space = body[at..]
+            .iter()
+            .position(|&b| b == b' ')
+            .map(|i| at + i)
+            .ok_or_else(|| malformed(at, "no length"))?;
+        let digits = &body[at..space];
+        if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
+            return Err(malformed(at, "length is not a decimal number"));
         }
-        at += len;
+        let len: usize = std::str::from_utf8(digits)
+            .ok()
+            .and_then(|d| d.parse().ok())
+            .ok_or_else(|| malformed(at, "length out of range"))?;
+        let end = at
+            .checked_add(len)
+            .filter(|&end| end <= body.len())
+            .ok_or_else(|| malformed(at, "length runs past the header"))?;
+        // At least "k=" and the newline after the space.
+        if end < space + 4 {
+            return Err(malformed(at, "length too short for its own record"));
+        }
+        if body[end - 1] != b'\n' {
+            return Err(malformed(at, "record does not end in a newline"));
+        }
+
+        let record = &body[space + 1..end - 1];
+        let eq = record
+            .iter()
+            .position(|&b| b == b'=')
+            .filter(|&eq| eq > 0)
+            .ok_or_else(|| malformed(at, "no key=value"))?;
+        let key = String::from_utf8_lossy(&record[..eq]).into_owned();
+        out.insert(key, record[eq + 1..].to_vec());
+        at = end;
     }
 
     Ok(out)
@@ -1042,5 +1092,144 @@ mod tests {
         assert_eq!(name, "file");
         assert_eq!(prefix, "d".repeat(120));
         assert!(prefix.len() <= 155 && name.len() <= 100);
+    }
+
+    /// Write just the headers of `header` — no contents — and read them back.
+    async fn headers_of(header: &Header) -> (Vec<u8>, Header) {
+        let mut writer = Writer::new(Vec::new());
+        writer.start(header).await.unwrap();
+        let bytes = std::mem::take(&mut writer.sink);
+        let back = Reader::new(Bytes::new(&bytes)).next().await.unwrap().unwrap();
+        (bytes, back)
+    }
+
+    /// Finding 1b7fbba3316e: the size field kept the low 11 octal digits, so
+    /// a file of 8 GiB was announced as empty.
+    #[tokio::test]
+    async fn sizes_at_and_past_eight_gib_are_never_wrapped() {
+        for size in [
+            OCTAL_SIZE_MAX - 1,
+            OCTAL_SIZE_MAX,
+            OCTAL_SIZE_MAX + 1,
+            OCTAL_SIZE_MAX + 2,
+            3 << 33,
+            1 << 40,
+            1 << 56,
+        ] {
+            let (bytes, back) = headers_of(&Header::file("big", size)).await;
+            assert_eq!(back.size, size, "size {size} read back as {}", back.size);
+
+            // The ustar header on its own, as a reader without PAX sees it.
+            let ustar = &bytes[bytes.len() - BLOCK..];
+            assert_eq!(octal(&ustar[124..136]).unwrap(), size, "header field for {size}");
+            let pax = bytes.len() > BLOCK;
+            if size <= OCTAL_SIZE_MAX {
+                assert!(!pax, "no PAX header needed for {size}");
+                assert_eq!(ustar[124] & 0x80, 0, "{size} fits in octal");
+            } else {
+                assert!(pax, "no PAX size record for {size}");
+                let body_len = octal(&bytes[124..136]).unwrap() as usize;
+                let records = parse_pax(&bytes[BLOCK..BLOCK + body_len]).unwrap();
+                let want = size.to_string();
+                assert_eq!(records.get("size").map(|v| v.as_slice()), Some(want.as_bytes()));
+                assert_ne!(ustar[124] & 0x80, 0, "{size} is base-256 in the header");
+            }
+            // The checksum still covers the block as written.
+            let mut copy = [0u8; BLOCK];
+            copy.copy_from_slice(ustar);
+            copy[148..156].fill(b' ');
+            let sum: u64 = copy.iter().map(|&b| b as u64).sum();
+            assert_eq!(octal(&ustar[148..155]).unwrap(), sum);
+        }
+    }
+
+    #[tokio::test]
+    async fn device_numbers_too_big_for_octal_survive() {
+        let header = Header {
+            kind: EntryKind::CharDevice,
+            major: 1 << 21,
+            minor: u32::MAX,
+            ..Header::file("dev", 0)
+        };
+        let (_, back) = headers_of(&header).await;
+        assert_eq!((back.major, back.minor), (1 << 21, u32::MAX));
+    }
+
+    /// Finding f1dbfb8746d6: a link target over 188 bytes ran on into the
+    /// prefix field, and the reader made a different path of it.
+    #[tokio::test]
+    async fn a_long_link_target_stays_out_of_the_other_fields() {
+        for len in [100, 101, 189, 200, 400, 1000] {
+            let target = "a".repeat(len);
+            for kind in [EntryKind::Symlink, EntryKind::HardLink] {
+                let header = Header {
+                    kind,
+                    link: target.clone(),
+                    ..Header::file("s", 0)
+                };
+                let (bytes, back) = headers_of(&header).await;
+                assert_eq!(back.path, "s", "path with a {len}-byte target");
+                assert_eq!(back.link, target, "{len}-byte target");
+
+                let ustar = &bytes[bytes.len() - BLOCK..];
+                assert_eq!(&ustar[157..257], &target.as_bytes()[..100], "linkname");
+                assert_eq!(&ustar[257..263], b"ustar\0", "magic");
+                assert_eq!(&ustar[263..265], b"00", "version");
+                assert!(ustar[265..329].iter().all(|&b| b == 0), "uname, gname");
+                assert_eq!(&ustar[329..345], b"0000000\00000000\0", "devmajor, devminor");
+                assert!(ustar[345..].iter().all(|&b| b == 0), "prefix");
+            }
+        }
+    }
+
+    /// Findings 4f140b33ebe6 and 8a75ec62f4e7: a declared length shorter
+    /// than its own prefix sliced backwards and panicked; a huge one
+    /// overflowed `at + len`.
+    #[test]
+    fn malformed_pax_records_are_errors_not_panics() {
+        let huge = format!("{} k=v\n", usize::MAX);
+        let past_usize = "99999999999999999999999 k=v\n".to_string();
+        let near_max = format!("{} k=v\n", usize::MAX - 1);
+        let cases: [(&str, &[u8]); 14] = [
+            ("length 1", &b"1 x=y\n"[..]),
+            ("length 2", &b"2 x=y\n"[..]),
+            ("length 3", &b"3 x=y\n"[..]),
+            ("length 0", &b"0 x=y\n"[..]),
+            ("overflowing", huge.as_bytes()),
+            ("near usize::MAX", near_max.as_bytes()),
+            ("past usize", past_usize.as_bytes()),
+            ("past the body", &b"20 x=y\n"[..]),
+            ("no newline", &b"6 x=yz"[..]),
+            ("no '='", &b"6 xyz\n"[..]),
+            ("empty key", &b"6 =yz\n"[..]),
+            ("signed length", &b"+6 x=y\n"[..]),
+            ("no length", &b"x=y\n"[..]),
+            ("good then bad", &b"6 x=y\n1 x=y\n"[..]),
+        ];
+        for (what, body) in cases {
+            assert!(parse_pax(body).is_err(), "{what}: {:?}", String::from_utf8_lossy(body));
+        }
+        // The shortest valid record, an empty value, and NUL padding after.
+        let ok = parse_pax(b"5 k=\n6 x=y\n\0\0\0").unwrap();
+        assert_eq!(ok.get("k").map(|v| v.as_slice()), Some(&b""[..]));
+        assert_eq!(ok.get("x").map(|v| v.as_slice()), Some(&b"y"[..]));
+        // A newline inside a value is the value's.
+        let ok = parse_pax(b"8 x=a\nb\n").unwrap();
+        assert_eq!(ok.get("x").map(|v| v.as_slice()), Some(&b"a\nb"[..]));
+    }
+
+    /// The same, through the reader: a malformed archive is an error.
+    #[tokio::test]
+    async fn a_malformed_pax_header_fails_the_read() {
+        let overflowing = format!("{} x=y\n", usize::MAX);
+        for body in [&b"1 x=y\n"[..], overflowing.as_bytes()] {
+            let mut archive = Vec::new();
+            archive.extend_from_slice(&encode(&Header::file("PaxHeaders/f", body.len() as u64), b'x'));
+            archive.extend_from_slice(body);
+            archive.resize(archive.len() + pad_for(body.len() as u64), 0);
+            archive.extend_from_slice(&encode(&Header::file("f", 0), b'0'));
+            archive.extend_from_slice(&[0u8; BLOCK * 2]);
+            assert!(read(&archive).await.is_err());
+        }
     }
 }
