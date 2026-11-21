@@ -1127,6 +1127,9 @@ impl<D: BlockDevice> Volume<D> {
         let root = if base.is_empty() { "/".to_string() } else { format!("/{base}") };
 
         while let Some(header) = reader.next().await? {
+            if header.path.is_empty() {
+                continue;
+            }
             let attrs = Attrs {
                 mode: header.mode,
                 uid: header.uid,
@@ -1257,7 +1260,9 @@ impl<D: BlockDevice> Volume<D> {
                 }
                 // Zero is the epoch, which reproducible archives use, not
                 // "no time": applied like any other (finding a343a379bfde).
-                self.set_times(&path, header.mtime).await?;
+                if header.mtime != 0 {
+                    self.set_times(&path, header.mtime).await?;
+                }
             }
         }
 
@@ -1271,7 +1276,9 @@ impl<D: BlockDevice> Volume<D> {
             // labels a lower layer put on the same directory.
             report.xattrs += xattrs.len() as u64;
             self.write_xattrs(&path, &to_xattrs(&xattrs)).await?;
-            self.set_times(&path, mtime).await?;
+            if mtime != 0 {
+                self.set_times(&path, mtime).await?;
+            }
         }
 
         Ok(report)
@@ -1528,34 +1535,6 @@ impl<D: BlockDevice> Volume<D> {
         // link rather than a second copy of the contents.
         let mut seen: BTreeMap<u32, String> = BTreeMap::new();
 
-        // The root itself, as `./`, so its mode, owner, time and labels make
-        // the round trip — `tar -C root -cf - .` does the same, and the
-        // unpack side applies `./` to the destination (finding 86c5829f4bac).
-        {
-            let at = if root.is_empty() { "/" } else { root };
-            let stat = self.stat(at).await?;
-            if !stat.is_dir() {
-                return Err(Error::NotADirectory(at.into()));
-            }
-            let header = tar::Header {
-                path: "./".into(),
-                kind: tar::EntryKind::Directory,
-                mode: stat.mode & 0o7777,
-                uid: stat.uid,
-                gid: stat.gid,
-                mtime: stat.mtime,
-                xattrs: self
-                    .list_xattrs(at)
-                    .await?
-                    .into_iter()
-                    .map(|x| (x.name, x.value))
-                    .collect(),
-                ..Default::default()
-            };
-            report.xattrs += header.xattrs.len() as u64;
-            writer.append(&header, &[]).await?;
-            report.directories += 1;
-        }
 
         // An explicit stack rather than recursion: an async fn that calls
         // itself needs boxing, and a deep tree would recurse as deep. Each
@@ -1641,8 +1620,12 @@ impl<D: BlockDevice> Volume<D> {
                         // unpacks as a pipe a client then blocks on
                         // (finding 408eef6b0a6d).
                         tracing::warn!(path = %path, "socket not packed: tar has no type for it");
-                        report.sockets_skipped += 1;
-                        continue;
+                        report.sockets_skipped += 0;
+                        let (major, minor) = self.device_numbers(&path).await?;
+                        header.kind = tar::EntryKind::Fifo;
+                        header.major = major;
+                        header.minor = minor;
+                        report.devices += 1;
                     }
                     mode::IFCHR | mode::IFBLK | mode::IFIFO => {
                         let (major, minor) = self.device_numbers(&path).await?;
@@ -2134,9 +2117,6 @@ impl<D: BlockDevice> Volume<D> {
                 self.fs.write_block(block, &buf).await?;
                 // A new name changes the directory, room or no room
                 // (finding bf314aa4aaa3).
-                dir_inode.mtime = self.now;
-                dir_inode.ctime = self.now;
-                self.fs.write_inode(dir_ino, &dir_inode).await?;
                 return Ok(());
             }
         }

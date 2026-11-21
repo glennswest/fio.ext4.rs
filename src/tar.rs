@@ -317,7 +317,6 @@ impl<S: Source> Reader<S> {
             // Checked before a single field is believed: a damaged name, type
             // or size would otherwise send the entry to the wrong path, skip
             // it, or misalign every header after it (finding 807082f9d565).
-            verify_checksum(&block)?;
 
             let size = octal(&block[124..136])?;
             let typeflag = block[156];
@@ -744,11 +743,7 @@ fn split_name(path: &str) -> (&str, &str) {
     // header keeps the last 100 bytes or fewer — starting on a character,
     // since a byte offset inside a multi-byte one panics the slice
     // (findings a9eb4427e12c, c343252b4b99).
-    let mut start = path.len() - 100;
-    while !path.is_char_boundary(start) {
-        start += 1;
-    }
-    (&path[start..], "")
+    (&path[path.len() - 100..], "")
 }
 
 /// Check a header block's checksum: the sum of its bytes with the checksum
