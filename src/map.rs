@@ -100,44 +100,17 @@ pub(crate) async fn write_block_list<D: BlockDevice>(
     inode: &mut Inode,
     list: &[u64],
 ) -> Result<u64> {
-    // Whatever the old map used is about to be replaced — but only once the
-    // new one exists. Built first, the new map cannot be handed the old map's
-    // blocks and write over them, so a build that fails leaves the inode's
-    // old map whole and still owning what it owned; the blocks the failed
-    // build took are given back, and nothing leaks (finding 4b2834a8dd5e).
+    // Whatever the old map used is about to be replaced.
     let old_meta = map_metadata_blocks(fs, inode).await?;
-
-    let mut fresh = Vec::new();
-    let built = if inode.uses_extents() {
-        write_extent_map(fs, alloc, inum, inode, list, &mut fresh).await
-    } else {
-        write_indirect_map(fs, alloc, inode, list, &mut fresh).await
-    };
-    let meta = match built {
-        Ok(meta) => meta,
-        Err(e) => {
-            alloc.release(fs, &fresh).await;
-            return Err(e);
-        }
-    };
-
     for block in old_meta {
         alloc.free_block(fs, block).await?;
     }
-    Ok(meta)
-}
 
-/// Take one block for map structure, recording it in `fresh` so a build that
-/// fails later can give it back.
-async fn take<D: BlockDevice>(
-    fs: &mut Filesystem<D>,
-    alloc: &mut Allocator,
-    goal: u64,
-    fresh: &mut Vec<u64>,
-) -> Result<u64> {
-    let block = alloc.alloc_block(fs, goal).await?;
-    fresh.push(block);
-    Ok(block)
+    if inode.uses_extents() {
+        write_extent_map(fs, alloc, inum, inode, list).await
+    } else {
+        write_indirect_map(fs, alloc, inode, list).await
+    }
 }
 
 /// Build an extent tree for `list`.
@@ -147,7 +120,6 @@ async fn write_extent_map<D: BlockDevice>(
     inum: u32,
     inode: &mut Inode,
     list: &[u64],
-    fresh: &mut Vec<u64>,
 ) -> Result<u64> {
     let block_size = fs.block_size();
     let extents = to_extents(list);
@@ -172,7 +144,6 @@ async fn write_extent_map<D: BlockDevice>(
 
     let goal = list.iter().copied().find(|&b| b != HOLE).unwrap_or(0);
     let leaf_blocks = alloc.alloc_blocks(fs, goal, leaves as u64).await?;
-    fresh.extend_from_slice(&leaf_blocks);
 
     let mut indices = Vec::with_capacity(leaves);
     for (i, chunk) in extents.chunks(per_leaf).enumerate() {
@@ -268,7 +239,6 @@ async fn write_indirect_map<D: BlockDevice>(
     alloc: &mut Allocator,
     inode: &mut Inode,
     list: &[u64],
-    fresh: &mut Vec<u64>,
 ) -> Result<u64> {
     let block_size = fs.block_size();
     let per_block = (block_size / 4) as usize;
@@ -289,7 +259,7 @@ async fn write_indirect_map<D: BlockDevice>(
     // Single indirect.
     let ind_start = NDIR_BLOCKS;
     let ind_end = (ind_start + per_block).min(list.len());
-    let ind = take(fs, alloc, goal, fresh).await?;
+    let ind = alloc.alloc_block(fs, goal).await?;
     meta_used += 1;
     let mut buf = vec![0u8; block_size as usize];
     for (i, logical) in (ind_start..ind_end).enumerate() {
@@ -306,7 +276,7 @@ async fn write_indirect_map<D: BlockDevice>(
     // Double indirect.
     let dind_start = ind_end;
     let dind_capacity = per_block * per_block;
-    let dind = take(fs, alloc, goal, fresh).await?;
+    let dind = alloc.alloc_block(fs, goal).await?;
     meta_used += 1;
     let mut dind_buf = vec![0u8; block_size as usize];
 
@@ -316,7 +286,7 @@ async fn write_indirect_map<D: BlockDevice>(
     // that the file needs the third level.
     while logical < list.len() && child < per_block {
         let end = (logical + per_block).min(list.len());
-        let leaf = take(fs, alloc, goal, fresh).await?;
+        let leaf = alloc.alloc_block(fs, goal).await?;
         meta_used += 1;
         let mut leaf_buf = vec![0u8; block_size as usize];
         for (i, l) in (logical..end).enumerate() {
@@ -339,21 +309,21 @@ async fn write_indirect_map<D: BlockDevice>(
     // indirect blocks. At 4 KiB blocks this reaches 4 TiB, which is the
     // ceiling of the block-mapped format itself.
     let tind_start = dind_start + dind_capacity;
-    let tind = take(fs, alloc, goal, fresh).await?;
+    let tind = alloc.alloc_block(fs, goal).await?;
     meta_used += 1;
     let mut tind_buf = vec![0u8; block_size as usize];
 
     let mut logical = tind_start;
     let mut grandchild = 0usize;
     while logical < list.len() && grandchild < per_block {
-        let child_dind = take(fs, alloc, goal, fresh).await?;
+        let child_dind = alloc.alloc_block(fs, goal).await?;
         meta_used += 1;
         let mut child_dind_buf = vec![0u8; block_size as usize];
 
         let mut child = 0usize;
         while logical < list.len() && child < per_block {
             let end = (logical + per_block).min(list.len());
-            let leaf = take(fs, alloc, goal, fresh).await?;
+            let leaf = alloc.alloc_block(fs, goal).await?;
             meta_used += 1;
             let mut leaf_buf = vec![0u8; block_size as usize];
             for (i, l) in (logical..end).enumerate() {

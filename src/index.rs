@@ -323,51 +323,22 @@ impl<D: BlockDevice> Volume<D> {
         dir_inode: &mut Inode,
         blocks: Vec<Vec<u8>>,
     ) -> Result<()> {
+        let block_size = self.fs.block_size() as u64;
         let mut list = map::read_block_list(&self.fs, dir_inode).await?;
 
         // Grow or shrink the directory to the length the tree needs. Blocks
         // already in place keep their position, so a rebuild rewrites contents
         // rather than moving the directory.
-        //
-        // Blocks a growing directory takes are given back if anything after
-        // fails, and those a shrinking one drops are freed only once the new
-        // map holds the rest (finding 4b2834a8dd5e).
-        let mut fresh = Vec::new();
-        if list.len() < blocks.len() {
+        while list.len() < blocks.len() {
             let goal = list.last().copied().unwrap_or(0);
-            let more = (blocks.len() - list.len()) as u64;
-            fresh = self.alloc.alloc_blocks(&mut self.fs, goal, more).await?;
-            list.extend_from_slice(&fresh);
+            let block = self.alloc.alloc_block(&mut self.fs, goal).await?;
+            list.push(block);
         }
-        let dropped: Vec<u64> = list.drain(blocks.len()..).collect();
-        match self
-            .write_directory_blocks(dir_ino, dir_inode, blocks, &list)
-            .await
-        {
-            Ok(()) => {}
-            Err(e) => {
-                self.alloc.release(&mut self.fs, &fresh).await;
-                return Err(e);
-            }
-        }
-        for block in dropped {
+        for block in list.drain(blocks.len()..).collect::<Vec<_>>() {
             if block != map::HOLE {
                 self.alloc.free_block(&mut self.fs, block).await?;
             }
         }
-        Ok(())
-    }
-
-    /// [`Volume::write_directory`]'s fallible part: write the blocks into
-    /// `list`, build the map and record the size.
-    async fn write_directory_blocks(
-        &mut self,
-        dir_ino: u32,
-        dir_inode: &mut Inode,
-        blocks: Vec<Vec<u8>>,
-        list: &[u64],
-    ) -> Result<()> {
-        let block_size = self.fs.block_size() as u64;
 
         let generation = dir_inode.generation;
         for (logical, mut buf) in blocks.into_iter().enumerate() {
@@ -388,7 +359,7 @@ impl<D: BlockDevice> Volume<D> {
             self.fs.write_block(physical, &buf).await?;
         }
 
-        let meta = map::write_block_list(&mut self.fs, &mut self.alloc, dir_ino, dir_inode, list)
+        let meta = map::write_block_list(&mut self.fs, &mut self.alloc, dir_ino, dir_inode, &list)
             .await?;
         dir_inode.flags |= iflags::INDEX;
         dir_inode.size = list.len() as u64 * block_size;
