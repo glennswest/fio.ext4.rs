@@ -68,6 +68,8 @@ pub mod volume;
 
 #[cfg(test)]
 mod review_tests;
+#[cfg(test)]
+mod nospace_tests;
 
 pub use error::{Error, Result};
 pub use mkfs_ext4::cache::{CacheStats, CachedDevice};

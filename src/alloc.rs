@@ -148,11 +148,39 @@ impl Allocator {
         let mut out = Vec::with_capacity(count as usize);
         let mut next_goal = goal;
         for _ in 0..count {
-            let block = self.alloc_block(fs, next_goal).await?;
-            next_goal = block + 1;
-            out.push(block);
+            match self.alloc_block(fs, next_goal).await {
+                Ok(block) => {
+                    next_goal = block + 1;
+                    out.push(block);
+                }
+                Err(e) => {
+                    // All or nothing: the blocks taken so far belong to no
+                    // one yet, and kept they would stay marked in use with no
+                    // owner — a failed write eating the free space it failed
+                    // for (finding 4b2834a8dd5e).
+                    self.release(fs, &out).await;
+                    return Err(e);
+                }
+            }
         }
         Ok(out)
+    }
+
+    /// Give back blocks an operation took and never attached to an inode,
+    /// because it failed before it could.
+    ///
+    /// Every failure path that holds fresh blocks ends here, so a failed
+    /// write leaves the counters where it found them (finding 4b2834a8dd5e).
+    /// [`crate::map::HOLE`] is skipped. A block taken by this session has its
+    /// bitmap in the cache already, so giving it back reads nothing and
+    /// cannot fail; an error from it is not allowed to hide the one that
+    /// caused the unwinding.
+    pub(crate) async fn release<D: BlockDevice>(&mut self, fs: &mut Filesystem<D>, blocks: &[u64]) {
+        for &block in blocks {
+            if block != 0 {
+                let _ = self.free_block(fs, block).await;
+            }
+        }
     }
 
     /// Give a block back.

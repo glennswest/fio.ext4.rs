@@ -454,7 +454,7 @@ impl<D: BlockDevice> Volume<D> {
                 inode.gid = attrs.gid;
                 inode.links_count = 1;
                 self.fs.write_inode(inum, &inode).await?;
-                self.link_into(parent_ino, name.as_bytes(), inum).await?;
+                self.link_new(parent_ino, name.as_bytes(), inum, false, &[]).await?;
                 inum
             }
         };
@@ -503,7 +503,14 @@ impl<D: BlockDevice> Volume<D> {
 
         let inum = self.alloc.alloc_inode(&mut self.fs, parent_ino, true).await?;
         let block_size = self.fs.block_size() as u64;
-        let block = self.alloc.alloc_block(&mut self.fs, 0).await?;
+        let block = match self.alloc.alloc_block(&mut self.fs, 0).await {
+            Ok(block) => block,
+            Err(e) => {
+                // No block for it: the inode goes back too (4b2834a8dd5e).
+                self.alloc.free_inode(&mut self.fs, inum, true).await?;
+                return Err(e);
+            }
+        };
 
         let with_tail = self.fs.has_metadata_csum();
         let filetype = self
@@ -529,13 +536,23 @@ impl<D: BlockDevice> Volume<D> {
         if self.fs.uses_extents() {
             inode.flags |= mkfs_ext4::structs::inode::iflags::EXTENTS;
         }
-        map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &[block]).await?;
+        let made = async {
+            map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &[block])
+                .await?;
+            self.fs.stamp_dir_block(&mut buf, inum, inode.generation);
+            self.fs.write_block(block, &buf).await?;
+            self.fs.write_inode(inum, &inode).await
+        }
+        .await;
+        if let Err(e) = made {
+            self.alloc.release(&mut self.fs, &[block]).await;
+            self.alloc.free_inode(&mut self.fs, inum, true).await?;
+            return Err(e);
+        }
 
-        self.fs.stamp_dir_block(&mut buf, inum, inode.generation);
-        self.fs.write_block(block, &buf).await?;
-        self.fs.write_inode(inum, &inode).await?;
-
-        self.link_into(parent_ino, name.as_bytes(), inum).await?;
+        let meta = map::map_metadata_blocks(&self.fs, &inode).await?;
+        let owned: Vec<u64> = std::iter::once(block).chain(meta).collect();
+        self.link_new(parent_ino, name.as_bytes(), inum, true, &owned).await?;
 
         // A new subdirectory's ".." is another link to the parent.
         let mut parent = self.fs.read_inode(parent_ino).await?;
@@ -1382,8 +1399,33 @@ impl<D: BlockDevice> Volume<D> {
         // block in hand is allocated next to the previous one and written,
         // and only the not-yet-full tail waits in memory.
         let inum = self.write_with(path, &[], attrs).await?;
-        let block_size = self.fs.block_size() as usize;
         let mut list: Vec<u64> = Vec::new();
+        match self.stream_into(inum, reader, pending, &mut list).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                // Out of space, a device error or a truncated archive: the
+                // blocks streamed so far are on no inode's map, so give them
+                // back. The file stays, empty, as `write_with` made it
+                // (finding 4b2834a8dd5e).
+                self.alloc.release(&mut self.fs, &list).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// [`Volume::unpack_file`]'s streaming half, into the empty file `inum`.
+    /// Every data block taken goes into `list` as it is taken, so a failure
+    /// anywhere — the map build included, which gives back its own blocks —
+    /// leaves the caller holding exactly what to give back.
+    async fn stream_into<S: tar::Source>(
+        &mut self,
+        inum: u32,
+        reader: &mut tar::Reader<S>,
+        mut pending: Vec<u8>,
+        list: &mut Vec<u64>,
+    ) -> Result<()> {
+        let block_size = self.fs.block_size() as usize;
+        let mut buf = vec![0u8; CHUNK];
         let mut size = 0u64;
         loop {
             let full = pending.len() / block_size;
@@ -1393,12 +1435,12 @@ impl<D: BlockDevice> Volume<D> {
                     .alloc
                     .alloc_blocks(&mut self.fs, goal, full as u64)
                     .await?;
+                list.extend_from_slice(&blocks);
                 for (i, &block) in blocks.iter().enumerate() {
                     self.fs
                         .write_block(block, &pending[i * block_size..(i + 1) * block_size])
                         .await?;
                 }
-                list.extend_from_slice(&blocks);
                 size += (full * block_size) as u64;
                 pending.drain(..full * block_size);
             }
@@ -1411,16 +1453,16 @@ impl<D: BlockDevice> Volume<D> {
         if !pending.is_empty() {
             let goal = list.last().copied().unwrap_or(0);
             let block = self.alloc.alloc_block(&mut self.fs, goal).await?;
+            list.push(block);
             let mut padded = vec![0u8; block_size];
             padded[..pending.len()].copy_from_slice(&pending);
             self.fs.write_block(block, &padded).await?;
-            list.push(block);
             size += pending.len() as u64;
         }
 
         let mut inode = self.fs.read_inode(inum).await?;
         let meta =
-            map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &list).await?;
+            map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, list).await?;
         inode.size = size;
         inode.blocks =
             (list.len() as u64 + meta) * (block_size as u64 / 512) + self.acl_sectors(&inode);
@@ -1668,7 +1710,7 @@ impl<D: BlockDevice> Volume<D> {
             inode.set_device_numbers(major, minor);
         }
         self.fs.write_inode(inum, &inode).await?;
-        self.link_into(parent_ino, name.as_bytes(), inum).await?;
+        self.link_new(parent_ino, name.as_bytes(), inum, false, &[]).await?;
         Ok(inum)
     }
 
@@ -1705,6 +1747,7 @@ impl<D: BlockDevice> Volume<D> {
         inode.size = target.len() as u64;
 
         let bytes = target.as_bytes();
+        let mut owned = Vec::new();
         if bytes.len() < mkfs_ext4::structs::inode::I_BLOCK_LEN {
             inode.flags &= !mkfs_ext4::structs::inode::iflags::EXTENTS;
             inode.block = [0u8; mkfs_ext4::structs::inode::I_BLOCK_LEN];
@@ -1712,17 +1755,32 @@ impl<D: BlockDevice> Volume<D> {
             inode.blocks = 0;
             self.fs.write_inode(inum, &inode).await?;
         } else {
-            let block = self.alloc.alloc_block(&mut self.fs, 0).await?;
-            let mut buf = vec![0u8; self.fs.block_size() as usize];
-            buf[..bytes.len()].copy_from_slice(bytes);
-            self.fs.write_block(block, &buf).await?;
-            map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &[block])
-                .await?;
-            inode.blocks = self.fs.block_size() as u64 / 512;
-            self.fs.write_inode(inum, &inode).await?;
+            let block = match self.alloc.alloc_block(&mut self.fs, 0).await {
+                Ok(block) => block,
+                Err(e) => {
+                    self.alloc.free_inode(&mut self.fs, inum, false).await?;
+                    return Err(e);
+                }
+            };
+            let made = async {
+                let mut buf = vec![0u8; self.fs.block_size() as usize];
+                buf[..bytes.len()].copy_from_slice(bytes);
+                self.fs.write_block(block, &buf).await?;
+                map::write_block_list(&mut self.fs, &mut self.alloc, inum, &mut inode, &[block])
+                    .await?;
+                inode.blocks = self.fs.block_size() as u64 / 512;
+                self.fs.write_inode(inum, &inode).await
+            }
+            .await;
+            if let Err(e) = made {
+                self.alloc.release(&mut self.fs, &[block]).await;
+                self.alloc.free_inode(&mut self.fs, inum, false).await?;
+                return Err(e);
+            }
+            owned.push(block);
         }
 
-        self.link_into(parent_ino, name.as_bytes(), inum).await?;
+        self.link_new(parent_ino, name.as_bytes(), inum, false, &owned).await?;
         Ok(inum)
     }
 
@@ -1806,21 +1864,62 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Replace a file's contents.
+    ///
+    /// All or nothing as far as the allocator is concerned: if a block, the
+    /// map or a write fails, every block this call took is given back and
+    /// the inode keeps its old map, size and blocks — so a write larger than
+    /// the free space fails without eating the free space, and nothing is
+    /// left marked in use with no owner (finding 4b2834a8dd5e). Blocks past
+    /// the new end are freed only once the new map is in place.
     async fn write_data(&mut self, inum: u32, data: &[u8]) -> Result<()> {
         let block_size = self.fs.block_size() as u64;
-        let needed = (data.len() as u64).div_ceil(block_size);
+        let needed = (data.len() as u64).div_ceil(block_size) as usize;
 
         let mut inode = self.fs.read_inode(inum).await?;
-        let mut list = map::read_block_list(&self.fs, &inode).await?;
+        let old = map::read_block_list(&self.fs, &inode).await?;
+        let mut list = old[..old.len().min(needed)].to_vec();
 
-        // Give back anything past the new end.
-        while list.len() as u64 > needed {
-            if let Some(block) = list.pop() {
-                if block != map::HOLE {
-                    self.alloc.free_block(&mut self.fs, block).await?;
-                }
+        let mut fresh = Vec::new();
+        let meta = match self
+            .fill_and_map(inum, &mut inode, data, &mut list, &mut fresh)
+            .await
+        {
+            Ok(meta) => meta,
+            Err(e) => {
+                self.alloc.release(&mut self.fs, &fresh).await;
+                return Err(e);
+            }
+        };
+
+        // The new map is in the inode; give back what it no longer holds.
+        for &block in old.iter().skip(needed) {
+            if block != map::HOLE {
+                self.alloc.free_block(&mut self.fs, block).await?;
             }
         }
+
+        inode.size = data.len() as u64;
+        inode.blocks = (list.len() as u64 + meta) * (block_size / 512) + self.acl_sectors(&inode);
+        inode.mtime = self.now;
+        inode.ctime = self.now;
+        self.fs.write_inode(inum, &inode).await?;
+        Ok(())
+    }
+
+    /// [`Volume::write_data`]'s fallible part: complete `list` to the blocks
+    /// `data` needs, write them, and build the map. Every block taken is
+    /// recorded in `fresh`, for the caller to give back on failure.
+    async fn fill_and_map(
+        &mut self,
+        inum: u32,
+        inode: &mut Inode,
+        data: &[u8],
+        list: &mut Vec<u64>,
+        fresh: &mut Vec<u64>,
+    ) -> Result<u64> {
+        let block_size = self.fs.block_size() as usize;
+        let needed = data.len().div_ceil(block_size);
+
         // Fill any hole being kept. The whole of `data` is about to be
         // written, so every slot needs a real block: a hole is `map::HOLE`,
         // block 0, and writing through it lands on the boot block — or, at
@@ -1831,6 +1930,7 @@ impl<D: BlockDevice> Volume<D> {
         for slot in list.iter_mut() {
             if *slot == map::HOLE {
                 *slot = self.alloc.alloc_block(&mut self.fs, prev).await?;
+                fresh.push(*slot);
             }
             prev = *slot;
         }
@@ -1838,38 +1938,27 @@ impl<D: BlockDevice> Volume<D> {
         // last: a goal that stays put has every allocation re-walk the bits
         // already taken, quadratic in the file (finding 402731625099).
         let mut goal = list.last().map_or(0, |b| b + 1);
-        while (list.len() as u64) < needed {
+        while list.len() < needed {
             let block = self.alloc.alloc_block(&mut self.fs, goal).await?;
+            fresh.push(block);
             goal = block + 1;
             list.push(block);
         }
 
         // Write the contents, padding the final partial block with zeroes.
         for (i, &block) in list.iter().enumerate() {
-            let from = i * block_size as usize;
-            let to = ((i + 1) * block_size as usize).min(data.len());
-            let mut buf = vec![0u8; block_size as usize];
+            let from = i * block_size;
+            let to = ((i + 1) * block_size).min(data.len());
+            let mut buf = vec![0u8; block_size];
             if from < data.len() {
                 buf[..to - from].copy_from_slice(&data[from..to]);
             }
             self.fs.write_block(block, &buf).await?;
         }
 
-        let meta = map::write_block_list(
-            &mut self.fs,
-            &mut self.alloc,
-            inum,
-            &mut inode,
-            &list,
-        )
-        .await?;
-
-        inode.size = data.len() as u64;
-        inode.blocks = (list.len() as u64 + meta) * (block_size / 512) + self.acl_sectors(&inode);
-        inode.mtime = self.now;
-        inode.ctime = self.now;
-        self.fs.write_inode(inum, &inode).await?;
-        Ok(())
+        // On failure this gives back its own map blocks and leaves `inode`'s
+        // old map alone.
+        map::write_block_list(&mut self.fs, &mut self.alloc, inum, inode, list).await
     }
 
     /// Free every block an inode owns and leave it empty.
@@ -2007,25 +2096,18 @@ impl<D: BlockDevice> Volume<D> {
         // No room: add a block.
         let goal = list.last().copied().unwrap_or(0);
         let block = self.alloc.alloc_block(&mut self.fs, goal).await?;
-        let mut buf = dir::empty_block(block_size as usize, with_tail);
-        if !dir::insert_into_block(&mut buf, with_tail, target, name, ft)? {
-            return Err(Error::InvalidName(
-                "name does not fit in an empty directory block".into(),
-            ));
-        }
-        self.fs
-            .stamp_dir_block(&mut buf, dir_ino, dir_inode.generation);
-        self.fs.write_block(block, &buf).await?;
-
         list.push(block);
-        let meta = map::write_block_list(
-            &mut self.fs,
-            &mut self.alloc,
-            dir_ino,
-            &mut dir_inode,
-            &list,
-        )
-        .await?;
+        let meta = match self
+            .grow_dir(dir_ino, &mut dir_inode, block, &list, name, target, ft)
+            .await
+        {
+            Ok(meta) => meta,
+            Err(e) => {
+                // The new block is on no map yet (finding 4b2834a8dd5e).
+                self.alloc.release(&mut self.fs, &[block]).await;
+                return Err(e);
+            }
+        };
         dir_inode.size = list.len() as u64 * block_size;
         dir_inode.blocks =
             (list.len() as u64 + meta) * (block_size / 512) + self.acl_sectors(&dir_inode);
@@ -2036,6 +2118,53 @@ impl<D: BlockDevice> Volume<D> {
     }
 
     /// Take a name out of a directory.
+    /// Name a freshly made inode in its parent. If the parent cannot take the
+    /// name — no room left to grow it, most often — the inode and the blocks
+    /// in `owned` go back, rather than staying marked in use with no name and
+    /// no owner (finding 4b2834a8dd5e).
+    async fn link_new(
+        &mut self,
+        parent: u32,
+        name: &[u8],
+        inum: u32,
+        is_dir: bool,
+        owned: &[u64],
+    ) -> Result<()> {
+        if let Err(e) = self.link_into(parent, name, inum).await {
+            self.alloc.release(&mut self.fs, owned).await;
+            self.alloc.free_inode(&mut self.fs, inum, is_dir).await?;
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// [`Volume::link_into`]'s fallible part when the directory needs a new
+    /// block: put the entry in `block`, write it, and map `list`, which ends
+    /// with it.
+    #[allow(clippy::too_many_arguments)]
+    async fn grow_dir(
+        &mut self,
+        dir_ino: u32,
+        dir_inode: &mut Inode,
+        block: u64,
+        list: &[u64],
+        name: &[u8],
+        target: u32,
+        ft: u8,
+    ) -> Result<u64> {
+        let block_size = self.fs.block_size() as usize;
+        let with_tail = self.fs.has_metadata_csum();
+        let mut buf = dir::empty_block(block_size, with_tail);
+        if !dir::insert_into_block(&mut buf, with_tail, target, name, ft)? {
+            return Err(Error::InvalidName(
+                "name does not fit in an empty directory block".into(),
+            ));
+        }
+        self.fs.stamp_dir_block(&mut buf, dir_ino, dir_inode.generation);
+        self.fs.write_block(block, &buf).await?;
+        map::write_block_list(&mut self.fs, &mut self.alloc, dir_ino, dir_inode, list).await
+    }
+
     async fn unlink_from(&mut self, dir_ino: u32, name: &[u8]) -> Result<u32> {
         let with_tail = self.fs.has_metadata_csum();
         let dir_inode = self.fs.read_inode(dir_ino).await?;
