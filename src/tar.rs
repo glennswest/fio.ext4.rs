@@ -1176,7 +1176,7 @@ mod tests {
                 assert_eq!(&ustar[257..263], b"ustar\0", "magic");
                 assert_eq!(&ustar[263..265], b"00", "version");
                 assert!(ustar[265..329].iter().all(|&b| b == 0), "uname, gname");
-                assert_eq!(&ustar[329..345], b"0000000\00000000\0", "devmajor, devminor");
+                assert_eq!(&ustar[329..345], b"0000000\x000000000\x00", "devmajor, devminor");
                 assert!(ustar[345..].iter().all(|&b| b == 0), "prefix");
             }
         }
